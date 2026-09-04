@@ -64,6 +64,11 @@ def dashboard():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/merchant-portal", include_in_schema=False)
+def merchant_portal():
+    return FileResponse(STATIC_DIR / "merchant-portal.html")
+
+
 @app.get("/merchant/readiness")
 def merchant_readiness():
     return scan_catalog_readiness(raw_catalog)
