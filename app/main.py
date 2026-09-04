@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.data.catalog import catalog
+from app.data.merchants import get_merchant_catalog, merchant_registry
 from app.data.raw_catalog import raw_catalog
 from app.models.order import OrderRequest
 from app.models.readiness import MerchantResolutionRequest
@@ -100,6 +101,43 @@ def get_products():
     return catalog
 
 
+@app.get("/merchants")
+def get_merchants():
+    return [entry["merchant"] for entry in merchant_registry.values()]
+
+
+@app.get("/merchants/{merchant_id}/products")
+def get_merchant_products(merchant_id: str):
+    merchant_catalog = get_merchant_catalog(merchant_id)
+    if merchant_catalog is None:
+        raise HTTPException(status_code=404, detail="Merchant not found")
+    return merchant_catalog
+
+
+@app.get("/merchants/{merchant_id}/products/search")
+def search_merchant_products(merchant_id: str, q: str):
+    merchant_catalog = get_merchant_catalog(merchant_id)
+    if merchant_catalog is None:
+        raise HTTPException(status_code=404, detail="Merchant not found")
+
+    normalized_query = q.casefold()
+    return [
+        product
+        for product in merchant_catalog
+        if any(
+            normalized_query in str(value).casefold()
+            for value in (
+                product.sku,
+                product.name,
+                product.category,
+                product.description,
+                *product.attributes.keys(),
+                *product.attributes.values(),
+            )
+        )
+    ]
+
+
 @app.get("/products/search")
 def search_products(q: str):
     q = q.lower()
@@ -143,6 +181,7 @@ def check_inventory(sku: str):
 def create_order(order_req: OrderRequest):
     try:
         result = create_guarded_order(
+            merchant_id=order_req.merchant_id,
             sku=order_req.sku,
             quantity=order_req.quantity,
             payment_order_creator=create_razorpay_order,
@@ -193,8 +232,9 @@ def confirm_order(order_id: str):
             detail="Order does not require confirmation"
         )
 
+    merchant_catalog = get_merchant_catalog(order["merchant_id"])
     product = None
-    for p in catalog:
+    for p in merchant_catalog or []:
         if p.sku == order["sku"]:
             product = p
             break

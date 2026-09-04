@@ -2,7 +2,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from app.data.catalog import catalog
+from app.data.merchants import get_merchant_catalog
 from app.services.audit_service import log_policy_decision
 from app.services.policy_engine import PolicyDecision, evaluate_order_policy
 from app.services.razorpay_service import create_razorpay_order
@@ -23,6 +23,7 @@ def create_order(
     sku: str,
     quantity: int,
     *,
+    merchant_id: str = "glowcare",
     payment_order_creator: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Create an order through catalog validation and the purchase policy."""
@@ -36,7 +37,18 @@ def create_order(
         )
         raise OrderServiceError(400, "Quantity must be greater than zero")
 
-    product = next((item for item in catalog if item.sku == sku), None)
+    merchant_catalog = get_merchant_catalog(merchant_id)
+    if merchant_catalog is None:
+        log_policy_decision(
+            sku=sku,
+            quantity=quantity,
+            total=0,
+            decision=PolicyDecision.BLOCKED.value,
+            reason="Merchant not found",
+        )
+        raise OrderServiceError(404, "Merchant not found")
+
+    product = next((item for item in merchant_catalog if item.sku == sku), None)
     if product is None:
         log_policy_decision(
             sku=sku,
@@ -89,6 +101,7 @@ def create_order(
         new_order = {
             "order_id": order_id,
             "razorpay_order_id": None,
+            "merchant_id": merchant_id,
             "sku": product.sku,
             "product_name": product.name,
             "quantity": quantity,
@@ -116,6 +129,7 @@ def create_order(
     new_order = {
         "order_id": order_id,
         "razorpay_order_id": razorpay_order["id"],
+        "merchant_id": merchant_id,
         "sku": product.sku,
         "product_name": product.name,
         "quantity": quantity,

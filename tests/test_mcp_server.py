@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 import app.main as main
 import app.services.order_service as order_service
-from app.mcp_server import catalog_search, create_order
+from app.mcp_server import catalog_search, create_order, list_merchants, mcp
 from app.services.audit_service import audit_logs
 
 
@@ -19,10 +19,28 @@ def setup_function():
     order_service.orders.clear()
 
 
-def test_catalog_search_still_works():
-    assert [product["sku"] for product in catalog_search("vitamin")] == [
-        "SKIN001"
-    ]
+def test_list_merchants_returns_only_public_metadata():
+    merchants = list_merchants()
+
+    assert {merchant["name"] for merchant in merchants} == {"GlowCare", "TechHub"}
+    assert all(set(merchant) == {
+        "merchant_id", "name", "category", "description", "agent_ready"
+    } for merchant in merchants)
+
+
+def test_catalog_search_is_merchant_scoped():
+    assert [p["sku"] for p in catalog_search("techhub", "keyboard")] == ["TECH001"]
+    assert [p["sku"] for p in catalog_search("glowcare", "vitamin")] == ["SKIN001"]
+    assert catalog_search("glowcare", "keyboard") == []
+    assert catalog_search("techhub", "vitamin") == []
+
+
+def test_unknown_merchant_search_returns_safe_error():
+    assert catalog_search("missing", "keyboard") == {
+        "error": "merchant_not_found",
+        "message": "Merchant not found",
+        "merchant_id": "missing",
+    }
 
 
 def test_mcp_create_order_enforces_policy_and_payment_boundary(monkeypatch):
@@ -38,10 +56,10 @@ def test_mcp_create_order_enforces_policy_and_payment_boundary(monkeypatch):
         fake_create_razorpay_order,
     )
 
-    approved = create_order("SKIN001", 2)
-    pending = create_order("SKIN001", 3)
-    blocked = create_order("SKIN001", 15)
-    invalid = create_order("MISSING", 1)
+    approved = create_order("glowcare", "SKIN001", 2)
+    pending = create_order("glowcare", "SKIN001", 3)
+    blocked = create_order("glowcare", "SKIN001", 15)
+    invalid = create_order("glowcare", "MISSING", 1)
 
     assert approved["policy_decision"] == "approved"
     assert approved["razorpay_order_id"] == "order_test_1"
@@ -62,6 +80,43 @@ def test_mcp_create_order_enforces_policy_and_payment_boundary(monkeypatch):
         "blocked",
         "blocked",
     ]
+
+
+def test_techhub_order_and_cross_merchant_isolation(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        order_service,
+        "create_razorpay_order",
+        lambda amount_rupees, receipt: (
+            calls.append((amount_rupees, receipt)) or {"id": "order_techhub"}
+        ),
+    )
+
+    approved = create_order("techhub", "TECH002", 1)
+    wrong_glowcare = create_order("glowcare", "TECH002", 1)
+    wrong_techhub = create_order("techhub", "SKIN001", 1)
+
+    assert approved["unit_price"] == approved["total"] == 1299.0
+    assert approved["policy_decision"] == "approved"
+    assert wrong_glowcare == wrong_techhub == {
+        "decision": "blocked", "reason": "Product not found"
+    }
+    assert calls == [(1299.0, approved["order_id"])]
+
+
+def test_mcp_exposes_only_three_expected_tools():
+    import asyncio
+
+    tools = asyncio.run(mcp.list_tools())
+    assert {tool.name for tool in tools} == {
+        "list_merchants", "catalog_search", "create_order"
+    }
+    schemas = {tool.name: set(tool.input_schema.get("properties", {})) for tool in tools}
+    assert schemas == {
+        "list_merchants": set(),
+        "catalog_search": {"merchant_id", "query"},
+        "create_order": {"merchant_id", "sku", "quantity"},
+    }
 
 
 def test_fastapi_create_order_uses_shared_service(monkeypatch):

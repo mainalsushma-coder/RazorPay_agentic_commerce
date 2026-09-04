@@ -16,8 +16,11 @@ from ollama import AsyncClient
 MODEL = "qwen3.5:4b"
 MAX_TOOL_ROUNDS = 12
 SYSTEM_INSTRUCTION = """You are a shopping agent for the Agent Storefront Autopilot.
-Use the available commerce tools to search the merchant catalog and
-create orders when explicitly requested by the user.
+Multiple merchants are available. Every catalog search and order must be
+associated with a merchant. Use list_merchants to discover valid merchant IDs,
+never invent merchant IDs, and never mix products between merchants.
+Use the available commerce tools to search the selected merchant catalog and
+create orders only when explicitly requested by the user.
 Never invent SKUs, prices, stock, order IDs, or payment results.
 Use catalog_search before purchasing when the SKU is not already known.
 Respect all tool results and policy decisions.
@@ -27,6 +30,13 @@ Human confirmation is not an available tool, so do not offer to perform or
 finalize that confirmation yourself.
 If an order is blocked, explain the policy reason.
 Never claim payment/order success unless the tool reports success."""
+
+
+def _server_parameters() -> StdioServerParameters:
+    return StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "app.mcp_server"],
+    )
 
 
 def _ollama_tools(mcp_tools: Sequence[Any]) -> list[dict[str, Any]]:
@@ -61,12 +71,15 @@ def _tool_result_text(result: Any) -> str:
     )
 
 
-async def run_agent(user_message: str, *, ollama_client: AsyncClient | None = None) -> str:
+async def run_agent(
+    user_message: str,
+    *,
+    merchant_id: str | None = None,
+    conversation_history: list[Any] | None = None,
+    ollama_client: AsyncClient | None = None,
+) -> str:
     """Run one user request through Ollama and the stdio MCP server."""
-    server = StdioServerParameters(
-        command="uv",
-        args=["run", "python", "-m", "app.mcp_server"],
-    )
+    server = _server_parameters()
     client = ollama_client or AsyncClient()
 
     async with stdio_client(server) as (read_stream, write_stream):
@@ -75,10 +88,16 @@ async def run_agent(user_message: str, *, ollama_client: AsyncClient | None = No
             discovered = (await session.list_tools()).tools
             tools = _ollama_tools(discovered)
             schemas = {tool.name: tool.input_schema for tool in discovered}
-            messages: list[Any] = [
-                {"role": "system", "content": SYSTEM_INSTRUCTION},
-                {"role": "user", "content": user_message},
-            ]
+            instruction = SYSTEM_INSTRUCTION
+            if merchant_id is not None:
+                instruction += (
+                    f"\nThe active merchant for this conversation is '{merchant_id}'. "
+                    "Use this exact merchant_id for every commerce tool call and do "
+                    "not switch merchants."
+                )
+            messages: list[Any] = [{"role": "system", "content": instruction}]
+            messages.extend(conversation_history or [])
+            messages.append({"role": "user", "content": user_message})
 
             for _ in range(MAX_TOOL_ROUNDS):
                 response = await client.chat(
@@ -91,6 +110,8 @@ async def run_agent(user_message: str, *, ollama_client: AsyncClient | None = No
                 messages.append(assistant_message)
                 calls = assistant_message.tool_calls or []
                 if not calls:
+                    if conversation_history is not None:
+                        conversation_history[:] = messages[1:]
                     return assistant_message.content or ""
 
                 for call in calls:
@@ -101,6 +122,16 @@ async def run_agent(user_message: str, *, ollama_client: AsyncClient | None = No
                     schema = schemas.get(name)
                     if schema is None:
                         result_text = json.dumps({"error": "Unknown MCP tool"})
+                    elif (
+                        merchant_id is not None
+                        and name in {"catalog_search", "create_order"}
+                        and arguments.get("merchant_id") != merchant_id
+                    ):
+                        result_text = json.dumps({
+                            "error": "merchant_context_mismatch",
+                            "message": "Tool call must use the active merchant",
+                            "merchant_id": merchant_id,
+                        })
                     else:
                         allowed = set(schema.get("properties", {}))
                         unexpected = sorted(set(arguments) - allowed)
@@ -119,15 +150,66 @@ async def run_agent(user_message: str, *, ollama_client: AsyncClient | None = No
     raise RuntimeError("The model exceeded the maximum number of tool rounds")
 
 
+def _select_merchant(
+    merchants: list[dict[str, Any]],
+    *,
+    input_fn: Any = input,
+    output_fn: Any = print,
+) -> dict[str, Any]:
+    ready_merchants = [merchant for merchant in merchants if merchant["agent_ready"]]
+    if not ready_merchants:
+        raise RuntimeError("No agent-ready merchants are available")
+
+    output_fn("Available stores:")
+    for index, merchant in enumerate(ready_merchants, start=1):
+        output_fn(f"{index}. {merchant['name']} — {merchant['category']}")
+
+    while True:
+        choice = input_fn("Select store: ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(ready_merchants):
+            selected = ready_merchants[int(choice) - 1]
+            output_fn(f"Selected: {selected['name']}")
+            return selected
+        output_fn("Please enter a valid store number.")
+
+
+async def _discover_merchants() -> list[dict[str, Any]]:
+    async with stdio_client(_server_parameters()) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            result = await session.call_tool("list_merchants", arguments={})
+            structured = getattr(result, "structured_content", None)
+            if isinstance(structured, dict):
+                value = structured.get("result", structured.get("merchants"))
+                if isinstance(value, list):
+                    return value
+            if isinstance(structured, list):
+                return structured
+            for item in result.content:
+                text = getattr(item, "text", None)
+                if text:
+                    decoded = json.loads(text)
+                    if isinstance(decoded, list):
+                        return decoded
+            raise RuntimeError("MCP merchant discovery returned an invalid response")
+
+
 async def _cli() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     try:
-        request = input("You: ").strip()
-        if not request:
-            return
-        answer = await run_agent(request)
-        print(f"Agent: {answer}")
+        selected = _select_merchant(await _discover_merchants())
+        history: list[Any] = []
+        while True:
+            request = input("You: ").strip()
+            if not request or request.casefold() in {"exit", "quit"}:
+                return
+            answer = await run_agent(
+                request,
+                merchant_id=selected["merchant_id"],
+                conversation_history=history,
+            )
+            print(f"Agent: {answer}")
     except (EOFError, KeyboardInterrupt):
         print()
 
