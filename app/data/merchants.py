@@ -1,13 +1,6 @@
-from typing import TypedDict
-
 from app.data.catalog import catalog as glowcare_catalog
 from app.models.merchant import Merchant
 from app.models.product import Product
-
-
-class MerchantRegistryEntry(TypedDict):
-    merchant: Merchant
-    catalog: list[Product]
 
 
 techhub_catalog = [
@@ -50,30 +43,33 @@ techhub_catalog = [
 ]
 
 
-merchant_registry: dict[str, MerchantRegistryEntry] = {
-    "glowcare": {
-        "merchant": Merchant(
+glowcare_merchant = Merchant(
             merchant_id="glowcare",
             name="GlowCare",
             description="Everyday skincare for simple, effective routines",
             category="Skincare",
             agent_ready=True,
-        ),
-        "catalog": glowcare_catalog,
-    },
-    "techhub": {
-        "merchant": Merchant(
+        )
+techhub_merchant = Merchant(
             merchant_id="techhub",
             name="TechHub",
             description="Practical electronics and desk accessories",
             category="Electronics",
             agent_ready=True,
-        ),
-        "catalog": techhub_catalog,
-    },
+        )
+
+seed_merchants = [
+    (glowcare_merchant, glowcare_catalog),
+    (techhub_merchant, techhub_catalog),
+]
+
+# Compatibility view for older callers/tests. New application code uses the repository.
+merchant_registry = {
+    merchant.merchant_id: {"merchant": merchant, "catalog": products}
+    for merchant, products in seed_merchants
 }
 
 
 def get_merchant_catalog(merchant_id: str) -> list[Product] | None:
-    entry = merchant_registry.get(merchant_id)
-    return entry["catalog"] if entry is not None else None
+    from app.repositories.catalog_repository import catalog_repository
+    return catalog_repository.get_catalog(merchant_id)

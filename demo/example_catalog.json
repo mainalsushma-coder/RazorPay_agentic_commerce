@@ -1,0 +1,4 @@
+[
+  {"sku":"JSON001","name":"Wireless Presenter","category":"Electronics","description":"USB presentation remote","price":1499,"currency":"INR","stock":9,"attributes":{"connectivity":"2.4GHz"}},
+  {"sku":"JSON002","name":"Laptop Stand","category":"Electronics","description":"Adjustable aluminium stand","price":1899,"currency":"INR","stock":11,"attributes":{"material":"Aluminium"}}
+]

@@ -1,13 +1,16 @@
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import ValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.data.catalog import catalog
-from app.data.merchants import get_merchant_catalog, merchant_registry
+from app.data.merchants import get_merchant_catalog
 from app.data.raw_catalog import raw_catalog
 from app.models.order import OrderRequest
+from app.models.product import Product
+from app.models.merchant import Merchant
 from app.models.chat import AgentChatRequest, AgentChatResponse
 from app.agent import run_agent
 from app.models.readiness import MerchantResolutionRequest
@@ -25,6 +28,8 @@ from app.services.order_service import (
 from app.services.policy_engine import MAX_SPEND_LIMIT
 from app.services.readiness_service import scan_catalog_readiness
 from app.services.razorpay_service import create_razorpay_order
+from app.repositories.catalog_repository import CatalogRepositoryError, catalog_repository
+from app.services.catalog_import_service import CatalogImportError, catalog_import_service
 
 
 app = FastAPI(
@@ -38,7 +43,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.post("/agent/chat", response_model=AgentChatResponse)
 async def agent_chat(request: AgentChatRequest):
-    if request.merchant_id not in merchant_registry:
+    if catalog_repository.get_merchant(request.merchant_id) is None:
         raise HTTPException(status_code=404, detail="Merchant not found")
     try:
         return await run_agent(
@@ -122,17 +127,25 @@ def merchant_readiness_resolve_preview(request: MerchantResolutionRequest):
 
 @app.get("/products")
 def get_products():
-    return catalog
+    return catalog_repository.get_catalog("glowcare") or []
 
 
 @app.get("/merchants")
 def get_merchants():
-    return [entry["merchant"] for entry in merchant_registry.values()]
+    return catalog_repository.list_merchants()
+
+
+@app.post("/merchants", status_code=201)
+def create_merchant(merchant: Merchant):
+    try:
+        return catalog_repository.create_merchant(merchant)
+    except CatalogRepositoryError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/merchants/{merchant_id}/products")
 def get_merchant_products(merchant_id: str):
-    merchant_catalog = get_merchant_catalog(merchant_id)
+    merchant_catalog = catalog_repository.get_catalog(merchant_id)
     if merchant_catalog is None:
         raise HTTPException(status_code=404, detail="Merchant not found")
     return merchant_catalog
@@ -140,46 +153,108 @@ def get_merchant_products(merchant_id: str):
 
 @app.get("/merchants/{merchant_id}/products/search")
 def search_merchant_products(merchant_id: str, q: str):
-    merchant_catalog = get_merchant_catalog(merchant_id)
+    merchant_catalog = catalog_repository.search_products(merchant_id, q)
     if merchant_catalog is None:
         raise HTTPException(status_code=404, detail="Merchant not found")
 
-    normalized_query = q.casefold()
-    return [
-        product
-        for product in merchant_catalog
-        if any(
-            normalized_query in str(value).casefold()
-            for value in (
-                product.sku,
-                product.name,
-                product.category,
-                product.description,
-                *product.attributes.keys(),
-                *product.attributes.values(),
-            )
-        )
-    ]
+    return merchant_catalog
+
+
+@app.post("/merchants/{merchant_id}/products", status_code=201)
+def add_merchant_product(merchant_id: str, product: Product):
+    try:
+        return catalog_repository.create_product(merchant_id, product)
+    except CatalogRepositoryError as exc:
+        status = 404 if str(exc) == "Merchant not found" else 409
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.put("/merchants/{merchant_id}/products/{sku}")
+def update_merchant_product(merchant_id: str, sku: str, product: Product):
+    try:
+        return catalog_repository.update_product(merchant_id, sku, product)
+    except CatalogRepositoryError as exc:
+        status = 409 if "Duplicate" in str(exc) else 404
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+def _import_error(exc: Exception, status_code: int = 400):
+    raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@app.post("/merchants/{merchant_id}/catalog/import", status_code=201)
+async def import_merchant_catalog(merchant_id: str, request: Request):
+    if catalog_repository.get_merchant(merchant_id) is None:
+        raise HTTPException(status_code=404, detail="Merchant not found")
+    try:
+        content_type = request.headers.get("content-type", "").lower()
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            upload = form.get("file")
+            if upload is None or not hasattr(upload, "read"):
+                raise CatalogImportError("A catalog file is required")
+            content = await upload.read()
+            filename = str(getattr(upload, "filename", "")).lower()
+            if filename.endswith(".json"):
+                try:
+                    records = catalog_import_service.parse_json(__import__("json").loads(content.decode("utf-8-sig")))
+                except (UnicodeDecodeError, ValueError) as exc:
+                    raise CatalogImportError("JSON file is unreadable") from exc
+            else:
+                records = catalog_import_service.parse_csv(content)
+        elif "application/json" in content_type:
+            records = catalog_import_service.parse_json(await request.json())
+        elif "text/csv" in content_type:
+            records = catalog_import_service.parse_csv(await request.body())
+        else:
+            raise CatalogImportError("Use CSV or JSON catalog content")
+        return catalog_import_service.stage(merchant_id, records)
+    except CatalogImportError as exc:
+        _import_error(exc)
+
+
+@app.get("/merchants/{merchant_id}/catalog/imports/{import_id}/readiness")
+def import_readiness(merchant_id: str, import_id: str):
+    try:
+        return catalog_import_service.summary(catalog_import_service.get(merchant_id, import_id))
+    except CatalogImportError as exc:
+        _import_error(exc, 404)
+
+
+@app.post("/merchants/{merchant_id}/catalog/imports/{import_id}/repair-preview")
+def import_repair(merchant_id: str, import_id: str):
+    try:
+        return catalog_import_service.repair(merchant_id, import_id)
+    except CatalogImportError as exc:
+        _import_error(exc, 404)
+
+
+@app.post("/merchants/{merchant_id}/catalog/imports/{import_id}/resolve")
+def import_resolve(merchant_id: str, import_id: str, request: MerchantResolutionRequest):
+    try:
+        return catalog_import_service.resolve(merchant_id, import_id, [r.model_dump() for r in request.resolutions])
+    except CatalogImportError as exc:
+        _import_error(exc, 404)
+    except CatalogResolutionError as exc:
+        _import_error(exc)
+
+
+@app.post("/merchants/{merchant_id}/catalog/imports/{import_id}/activate")
+def activate_import(merchant_id: str, import_id: str):
+    try:
+        return catalog_import_service.activate(merchant_id, import_id, catalog_repository)
+    except CatalogImportError as exc:
+        _import_error(exc, 409)
 
 
 @app.get("/products/search")
 def search_products(q: str):
-    q = q.lower()
-
-    results = [
-        product
-        for product in catalog
-        if q in product.name.lower()
-        or q in product.category.lower()
-        or q in product.description.lower()
-    ]
-
-    return results
+    return catalog_repository.search_products("glowcare", q) or []
 
 
 @app.get("/inventory/{sku}")
 def check_inventory(sku: str):
-    for product in catalog:
+    for product in catalog_repository.get_catalog("glowcare") or []:
         if product.sku == sku:
 
             stock = (

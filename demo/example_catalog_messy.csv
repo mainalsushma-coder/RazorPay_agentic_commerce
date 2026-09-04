@@ -1,0 +1,4 @@
+sku,name,category,description,price,currency,stock,attributes
+DEMO101,Daily Sunscreen,Skincare,Broad spectrum daily sunscreen,₹699,,12,"{""size"":""50ml""}"
+DEMO102,Desk Lamp,Electronics,,899 INR,INR,8,"{""connectivity"":""USB-C""}"
+DEMO103,Gift Box,Lifestyle,,contact seller,INR,5,{}

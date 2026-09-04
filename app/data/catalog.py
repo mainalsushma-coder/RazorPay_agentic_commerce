@@ -33,8 +33,8 @@ catalog = [
         name="Hydrating Moisturizer",
         category="Skincare",
         description="Lightweight daily moisturizer",
-        price="599",
-        stock="8",
+        price=599.0,
+        stock=8,
         attributes={
             "size": "50g"
         }

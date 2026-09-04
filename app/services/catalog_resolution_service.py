@@ -18,9 +18,9 @@ def _validate_value(field: str, value: Any) -> None:
             isinstance(value, bool)
             or not isinstance(value, (int, float))
             or not math.isfinite(value)
-            or value <= 0
+            or value < 0
         ):
-            raise CatalogResolutionError("Price must be a positive number")
+            raise CatalogResolutionError("Price must be a non-negative number")
         return
 
     if field == "stock":

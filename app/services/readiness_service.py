@@ -114,6 +114,18 @@ def scan_catalog_readiness(
                 "Stock must be stored as an integer",
             )
 
+        if isinstance(price, (int, float)) and not isinstance(price, bool) and price < 0:
+            add_issue(index, sku, "price", "invalid_price", "Price cannot be negative")
+        if isinstance(stock, int) and not isinstance(stock, bool) and stock < 0:
+            add_issue(index, sku, "stock", "invalid_stock", "Stock cannot be negative")
+
+    seen_skus: set[str] = set()
+    for index, product in enumerate(catalog):
+        sku = str(product.get("sku") or "").strip()
+        if sku and sku in seen_skus:
+            add_issue(index, sku, "sku", "duplicate_sku", "SKU must be unique within a merchant catalog")
+        seen_skus.add(sku)
+
     total_products = len(catalog)
     total_checks = total_products * len(REQUIRED_FIELDS)
     failed_checks = len(failed_fields)

@@ -2,7 +2,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from app.data.merchants import get_merchant_catalog
+from app.repositories.catalog_repository import catalog_repository
 from app.services.audit_service import log_policy_decision
 from app.services.policy_engine import PolicyDecision, evaluate_order_policy
 from app.services.razorpay_service import create_razorpay_order
@@ -37,8 +37,8 @@ def create_order(
         )
         raise OrderServiceError(400, "Quantity must be greater than zero")
 
-    merchant_catalog = get_merchant_catalog(merchant_id)
-    if merchant_catalog is None:
+    merchant = catalog_repository.get_merchant(merchant_id)
+    if merchant is None:
         log_policy_decision(
             sku=sku,
             quantity=quantity,
@@ -48,7 +48,7 @@ def create_order(
         )
         raise OrderServiceError(404, "Merchant not found")
 
-    product = next((item for item in merchant_catalog if item.sku == sku), None)
+    product = catalog_repository.find_product(merchant_id, sku)
     if product is None:
         log_policy_decision(
             sku=sku,

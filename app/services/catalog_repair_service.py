@@ -89,6 +89,9 @@ def repair_catalog(
                 "Converted a numeric stock string to an integer",
             )
 
+        # Numeric-looking values without currency evidence are safe to normalize;
+        # currency itself remains unresolved until supplied by the merchant.
+
         if _is_missing(product.get("currency")) and _indicates_inr(original_price):
             old_currency = product.get("currency")
             product["currency"] = "INR"
@@ -119,6 +122,15 @@ def repair_catalog(
                     "reason": "Unparseable price needs merchant input",
                 }
             )
+        elif isinstance(repaired_price, (int, float)) and not isinstance(repaired_price, bool) and repaired_price < 0:
+            unresolved_issues.append({"sku": sku, "field": "price", "reason": "Negative price needs merchant input"})
+
+        repaired_stock = product.get("stock")
+        if (
+            isinstance(repaired_stock, str)
+            and not _INTEGER_PATTERN.fullmatch(repaired_stock.strip())
+        ) or (isinstance(repaired_stock, int) and not isinstance(repaired_stock, bool) and repaired_stock < 0):
+            unresolved_issues.append({"sku": sku, "field": "stock", "reason": "Invalid stock needs merchant input"})
 
     return {
         "catalog": repaired_catalog,

@@ -2,7 +2,7 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer as FastMCP
 
-from app.data.merchants import get_merchant_catalog, merchant_registry
+from app.repositories.catalog_repository import catalog_repository
 from app.services.order_service import (
     OrderServiceError,
     create_order as create_guarded_order,
@@ -15,7 +15,7 @@ mcp = FastMCP("Agent Storefront Autopilot")
 @mcp.tool()
 def list_merchants() -> list[dict[str, Any]]:
     """List public metadata for merchants available to the shopping agent."""
-    return [entry["merchant"].model_dump() for entry in merchant_registry.values()]
+    return [merchant.model_dump() for merchant in catalog_repository.list_merchants()]
 
 
 @mcp.tool()
@@ -24,7 +24,7 @@ def catalog_search(
     query: str,
 ) -> list[dict[str, Any]] | dict[str, str]:
     """Search one merchant's catalog by product facts and attributes."""
-    merchant_catalog = get_merchant_catalog(merchant_id)
+    merchant_catalog = catalog_repository.search_products(merchant_id, query)
     if merchant_catalog is None:
         return {
             "error": "merchant_not_found",
@@ -32,25 +32,12 @@ def catalog_search(
             "merchant_id": merchant_id,
         }
 
-    normalized_query = query.casefold()
-
     return [
         {
             "merchant_id": merchant_id,
             **product.model_dump(),
         }
         for product in merchant_catalog
-        if any(
-            normalized_query in str(value).casefold()
-            for value in (
-                product.sku,
-                product.name,
-                product.category,
-                product.description,
-                *product.attributes.keys(),
-                *product.attributes.values(),
-            )
-        )
     ]
 
 
