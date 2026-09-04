@@ -1,16 +1,15 @@
-import uuid
-
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from app.data.catalog import catalog
 from app.models.order import OrderRequest
 from app.services.audit_service import get_audit_logs, log_policy_decision
-from app.services.policy_engine import (
-    MAX_SPEND_LIMIT,
-    PolicyDecision,
-    evaluate_order_policy,
+from app.services.order_service import (
+    OrderServiceError,
+    create_order as create_guarded_order,
+    orders,
 )
+from app.services.policy_engine import MAX_SPEND_LIMIT
 from app.services.razorpay_service import create_razorpay_order
 
 
@@ -18,10 +17,6 @@ app = FastAPI(
     title="Agent Storefront Autopilot",
     version="0.1.0"
 )
-
-# Temporary in-memory order storage
-orders = {}
-
 
 @app.get("/")
 def root():
@@ -76,131 +71,24 @@ def check_inventory(sku: str):
 
 @app.post("/orders")
 def create_order(order_req: OrderRequest):
-
-    # Validate quantity
-    if order_req.quantity <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Quantity must be greater than zero"
-        )
-
-    # Find product
-    product = None
-
-    for p in catalog:
-        if p.sku == order_req.sku:
-            product = p
-            break
-
-    if product is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Product not found"
-        )
-
-    # Convert stock to integer if necessary
-    stock = (
-        int(product.stock)
-        if isinstance(product.stock, str)
-        else product.stock
-    )
-
-    # Check inventory
-    if stock < order_req.quantity:
-        raise HTTPException(
-            status_code=400,
-            detail="Insufficient stock"
-        )
-
-    # Calculate total
-    unit_price = float(product.price)
-    total = unit_price * order_req.quantity
-
-    policy_result = evaluate_order_policy(
-        sku=order_req.sku,
-        quantity=order_req.quantity,
-        unit_price=unit_price,
-        catalog_product=product,
-    )
-
-    if policy_result["decision"] == PolicyDecision.BLOCKED:
-        log_policy_decision(
-            sku=product.sku,
+    try:
+        result = create_guarded_order(
+            sku=order_req.sku,
             quantity=order_req.quantity,
-            total=total,
-            decision=PolicyDecision.BLOCKED.value,
-            reason=policy_result["reason"],
+            payment_order_creator=create_razorpay_order,
         )
+    except OrderServiceError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail,
+        ) from exc
+
+    if result.get("decision") == "blocked":
         return JSONResponse(
             status_code=403,
-            content={
-                "decision": PolicyDecision.BLOCKED.value,
-                "reason": policy_result["reason"],
-            },
+            content=result,
         )
-
-    if policy_result["decision"] == PolicyDecision.REQUIRES_CONFIRMATION:
-        order_id = str(uuid.uuid4())
-        new_order = {
-            "order_id": order_id,
-            "razorpay_order_id": None,
-            "sku": product.sku,
-            "product_name": product.name,
-            "quantity": order_req.quantity,
-            "unit_price": unit_price,
-            "total": total,
-            "currency": product.currency,
-            "status": "requires_confirmation",
-            "policy_decision": PolicyDecision.REQUIRES_CONFIRMATION.value,
-        }
-        orders[order_id] = new_order
-
-        log_policy_decision(
-            sku=product.sku,
-            quantity=order_req.quantity,
-            total=total,
-            decision=PolicyDecision.REQUIRES_CONFIRMATION.value,
-            reason=policy_result["reason"],
-        )
-        return new_order
-
-    # Generate internal order ID
-    order_id = str(uuid.uuid4())
-
-    # Create Razorpay order
-    razorpay_order = create_razorpay_order(
-        amount_rupees=total,
-        receipt=order_id
-    )
-
-    log_policy_decision(
-        sku=product.sku,
-        quantity=order_req.quantity,
-        total=total,
-        decision=PolicyDecision.APPROVED.value,
-        reason=policy_result["reason"],
-        order_id=order_id,
-        razorpay_order_id=razorpay_order["id"],
-    )
-
-    # Create our internal order
-    new_order = {
-        "order_id": order_id,
-        "razorpay_order_id": razorpay_order["id"],
-        "sku": product.sku,
-        "product_name": product.name,
-        "quantity": order_req.quantity,
-        "unit_price": unit_price,
-        "total": total,
-        "currency": product.currency,
-        "status": "created",
-        "policy_decision": PolicyDecision.APPROVED.value,
-    }
-
-    # Save order temporarily
-    orders[order_id] = new_order
-
-    return new_order
+    return result
 
 
 @app.get("/audit")
