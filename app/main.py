@@ -283,7 +283,20 @@ def confirm_order(order_id: str):
             detail="Insufficient stock"
         )
 
-    unit_price = float(product.price)
+    try:
+        unit_price = float(product.price)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Product price is invalid",
+        ) from exc
+
+    if unit_price != order["unit_price"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Product price changed; create a new order",
+        )
+
     total = unit_price * quantity
     if total > MAX_SPEND_LIMIT:
         raise HTTPException(

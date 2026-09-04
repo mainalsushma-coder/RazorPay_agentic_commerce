@@ -48,6 +48,47 @@ def test_chat_rejects_unknown_merchant_without_running_agent(monkeypatch):
     assert response.status_code == 404
 
 
+def test_chat_returns_safe_pending_order_and_internal_confirmation_id(monkeypatch):
+    async def fake_agent(message, *, merchant_id, conversation_history):
+        return AgentChatResponse(
+            message="Human confirmation is required.",
+            merchant_id=merchant_id,
+            events=[
+                AgentEvent(type="tool_call", tool="create_order", status="completed"),
+                AgentEvent(type="policy", decision="requires_confirmation"),
+            ],
+            order={
+                "order_id": "pending-internal-id",
+                "merchant_id": merchant_id,
+                "sku": "SKIN001",
+                "quantity": 3,
+                "total": 2097.0,
+                "status": "requires_confirmation",
+                "policy_decision": "requires_confirmation",
+                "razorpay_order_id": None,
+            },
+        )
+
+    monkeypatch.setattr("app.main.run_agent", fake_agent)
+    response = client.post("/agent/chat", json={
+        "merchant_id": "glowcare",
+        "message": "Buy three SKIN001",
+        "conversation_history": [],
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["order"]["order_id"] == "pending-internal-id"
+    assert body["order"]["razorpay_order_id"] is None
+    assert body["events"] == [
+        {"type": "tool_call", "tool": "create_order", "status": "completed", "decision": None},
+        {"type": "policy", "tool": None, "status": None, "decision": "requires_confirmation"},
+    ]
+    serialized = response.text.casefold()
+    assert "system_instruction" not in serialized
+    assert "you are a shopping agent" not in serialized
+
+
 def test_browser_uses_only_safe_server_endpoints():
     script = client.get("/static/app.js").text
     assert "/agent/chat" in script
