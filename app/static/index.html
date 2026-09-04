@@ -1,93 +1,28 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Agent Storefront Autopilot demo dashboard">
-  <title>Agent Storefront Autopilot</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Agent Storefront Autopilot — AI commerce with guarded checkout">
+  <title>Stores · Agent Storefront Autopilot</title><link rel="stylesheet" href="/static/styles.css">
 </head>
-<body>
-  <div class="ambient ambient-one"></div>
-  <div class="ambient ambient-two"></div>
-  <main class="shell">
-    <header class="hero">
-      <div>
-        <div class="eyebrow"><span class="pulse"></span> Local demo environment</div>
-        <h1>Agent Storefront <span>Autopilot</span></h1>
-        <p>AI commerce with guarded checkout</p>
-      </div>
-      <div class="guardrail"><span aria-hidden="true">◆</span> Policy guardrails active</div>
-    </header>
-
-    <section class="dashboard-grid" aria-label="Commerce dashboard">
-      <article class="panel agent-panel">
-        <div class="panel-heading">
-          <div><p class="kicker">SHOPPING AGENT</p><h2>Commerce copilot</h2></div>
-          <span class="status status-soon">Step 2</span>
-        </div>
-        <div class="conversation" id="conversation" aria-live="polite">
-          <div class="agent-avatar">A</div>
-          <div class="message">
-            <strong>Agent connection coming next</strong>
-            <p>This preview intentionally does not connect the browser to Ollama. The existing guarded agent workflow will be wired in the next step.</p>
-          </div>
-        </div>
-        <form class="agent-form" id="agent-form">
-          <label class="sr-only" for="agent-input">Message the shopping agent</label>
-          <input id="agent-input" type="text" placeholder="Ask for a product or place an order…" autocomplete="off">
-          <button type="submit">Send <span aria-hidden="true">→</span></button>
-        </form>
-      </article>
-
-      <article class="panel readiness-panel">
-        <div class="panel-heading">
-          <div><p class="kicker">MERCHANT READINESS</p><h2>Catalog health</h2></div>
-          <span class="status status-live">Live scan</span>
-        </div>
-        <div class="score-grid">
-          <div class="score-card original">
-            <span>Original</span><strong id="original-score">—</strong>
-            <div class="progress"><i id="original-progress"></i></div>
-          </div>
-          <div class="score-arrow" aria-hidden="true">→</div>
-          <div class="score-card autopilot">
-            <span>With Autopilot</span><strong id="autopilot-score">—</strong>
-            <div class="progress"><i id="autopilot-progress"></i></div>
-          </div>
-        </div>
-        <div class="metric-row">
-          <div><span>Issues found</span><strong id="issue-count">—</strong></div>
-          <div><span>Repairs performed</span><strong id="repair-count">—</strong></div>
-          <div><span>Needs merchant</span><strong id="unresolved-count">—</strong></div>
-        </div>
-        <button class="secondary-button" id="repair-button" type="button">Autopilot Repair Preview <span>↗</span></button>
-        <div class="repair-details" id="repair-details" hidden></div>
-      </article>
-
-      <article class="panel audit-panel">
-        <div class="panel-heading">
-          <div><p class="kicker">AUDIT TRAIL</p><h2>Guarded decisions</h2></div>
-          <button class="icon-button" id="refresh-audit" type="button" aria-label="Refresh audit trail" title="Refresh audit trail">↻</button>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Timestamp</th><th>SKU</th><th>Qty</th><th>Total</th><th>Decision</th><th>Reason</th></tr></thead>
-            <tbody id="audit-body"><tr><td colspan="6" class="loading">Loading decisions…</td></tr></tbody>
-          </table>
-        </div>
-      </article>
-
-      <article class="panel catalog-panel">
-        <div class="panel-heading">
-          <div><p class="kicker">LIVE CATALOG</p><h2>Storefront products</h2></div>
-          <span class="product-count" id="product-count">— products</span>
-        </div>
-        <div class="product-grid" id="product-grid"><p class="loading">Loading catalog…</p></div>
-      </article>
-    </section>
-    <footer><span>Agent Storefront Autopilot</span><span>Local API • Guarded checkout • Explainable decisions</span></footer>
+<body><div class="app-shell">
+  <nav class="product-nav" aria-label="Primary navigation">
+    <a class="brand" href="/dashboard"><span class="brand-mark">A</span><span>Autopilot</span></a>
+    <div class="nav-links"><a class="nav-link active" href="/dashboard" aria-current="page"><span>▣</span> Stores</a><a class="nav-link" href="/merchant/readiness"><span>◇</span> Merchant Portal</a></div>
+    <div class="nav-foot"><i></i> Guardrails active</div>
+  </nav>
+  <aside class="store-sidebar" aria-label="Store inbox">
+    <header class="sidebar-header"><div><p class="eyebrow">Commerce inbox</p><h1>Stores</h1></div><span class="store-count" id="store-count">—</span></header>
+    <label class="search-box" for="store-search"><svg viewBox="0 0 24 24"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z"/></svg><input id="store-search" type="search" placeholder="Search stores" autocomplete="off"></label>
+    <div class="store-list" id="store-list" aria-live="polite" aria-busy="true"><div class="store-skeleton"></div><div class="store-skeleton"></div></div>
+    <div class="sidebar-note"><span>✦</span><p><strong>One inbox, many categories.</strong><br>Each store has its own catalog and agent context.</p></div>
+  </aside>
+  <main class="conversation-panel">
+    <header class="conversation-header"><div class="merchant-avatar avatar-large" id="header-avatar">—</div><div class="merchant-heading"><h2 id="merchant-name">Select a store</h2><p id="merchant-category">Start a shopping conversation</p></div><span class="agent-status" id="agent-status"><i></i> Agent Ready</span></header>
+    <section class="messages" id="conversation" aria-live="polite"><div class="conversation-loading"><span></span><p>Opening your store inbox…</p></div></section>
+    <footer class="composer-wrap"><p class="integration-note" id="integration-note" hidden></p><form class="composer" id="agent-form"><label class="sr-only" for="agent-input">Message this store</label><input id="agent-input" placeholder="Ask this store anything..." disabled><button type="submit" disabled>Send <svg viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4 20-7Z"/><path d="m22 2-11 11"/></svg></button></form><p class="composer-caption">🛡 Purchases are independently verified against inventory, price, and policy.</p></footer>
   </main>
-  <script src="/static/app.js" defer></script>
-</body>
-</html>
+</div>
+<template id="product-card-template"><article class="product-card"><div class="product-heading"><div><p class="product-category"></p><h3 class="product-name"></h3><p class="product-sku"></p></div><p class="product-price"></p></div><p class="product-stock"></p><div class="product-attributes"></div><button class="buy-button" type="button">Buy <span>→</span></button></article></template>
+<template id="checkout-status-template"><article class="checkout-card"><div class="checkout-icon"></div><div class="checkout-content"><p class="checkout-label"></p><h3 class="checkout-title"></h3><div class="checkout-body"></div></div></article></template>
+<script src="/static/app.js" defer></script></body></html>

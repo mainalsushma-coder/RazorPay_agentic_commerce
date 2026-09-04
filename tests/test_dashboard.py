@@ -24,12 +24,11 @@ def test_dashboard_assets_are_served():
     script = client.get("/static/app.js")
 
     assert styles.status_code == 200
-    assert ".score-grid" in styles.text
+    assert ".store-sidebar" in styles.text
+    assert ".product-card" in styles.text
+    assert ".checkout-card" in styles.text
     assert script.status_code == 200
-    for endpoint in (
-        "/products",
-        "/merchant/readiness",
-        "/merchant/readiness/repair-preview",
-        "/audit",
-    ):
+    for endpoint in ("/merchants", "/products"):
         assert endpoint in script.text
+    assert "createProductCard" in script.text
+    assert "createStatusCard" in script.text

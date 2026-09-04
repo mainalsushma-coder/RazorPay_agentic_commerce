@@ -1,99 +1,23 @@
-const $ = (selector) => document.querySelector(selector);
+const $=(s,r=document)=>r.querySelector(s);const state={merchants:[],selectedId:null,query:"",products:new Map()};
+const escapeHtml=v=>String(v??"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[c]);
+async function getJson(path){const response=await fetch(path,{headers:{Accept:"application/json"}});if(!response.ok)throw new Error(`Request failed (${response.status})`);return response.json()}
+const initials=name=>String(name||"Store").split(/\s+/).map(word=>word[0]).join("").slice(0,2).toUpperCase();
+const money=(value,currency="INR")=>new Intl.NumberFormat("en-IN",{style:"currency",currency,maximumFractionDigits:2}).format(Number(value));
+const humanize=value=>String(value).replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase());
+const selectedMerchant=()=>state.merchants.find(m=>m.merchant_id===state.selectedId);
 
-const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({
-  "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"
-})[char]);
+function renderStores(){const list=$("#store-list"),query=state.query.trim().toLowerCase();const visible=state.merchants.filter(m=>[m.name,m.category,m.description].some(v=>String(v||"").toLowerCase().includes(query)));$("#store-count").textContent=visible.length;list.setAttribute("aria-busy","false");if(!visible.length){list.innerHTML='<div class="store-empty"><strong>No stores found</strong>Try a different name or category.</div>';return}list.innerHTML=visible.map(m=>`<button class="store-item ${m.merchant_id===state.selectedId?"selected":""}" type="button" data-merchant-id="${escapeHtml(m.merchant_id)}" aria-pressed="${m.merchant_id===state.selectedId}"><span class="merchant-avatar">${escapeHtml(initials(m.name))}</span><span class="store-main"><span class="store-name">${escapeHtml(m.name)}</span><span class="store-category">${escapeHtml(m.category)}</span><span class="ready"><i></i>${m.agent_ready?"Agent Ready":"Agent Offline"}</span></span></button>`).join("");list.querySelectorAll("[data-merchant-id]").forEach(button=>button.addEventListener("click",()=>selectMerchant(button.dataset.merchantId)))}
 
-async function getJson(path) {
-  const response = await fetch(path, { headers: { Accept: "application/json" } });
-  if (!response.ok) throw new Error(`${path} returned ${response.status}`);
-  return response.json();
-}
+function createProductCard(product){const card=$("#product-card-template").content.firstElementChild.cloneNode(true);$(".product-category",card).textContent=product.category||"Product";$(".product-name",card).textContent=product.name;$(".product-sku",card).textContent=`SKU · ${product.sku}`;$(".product-price",card).textContent=money(product.price,product.currency);const stock=Number(product.stock),stockNode=$(".product-stock",card);stockNode.textContent=stock>0?(stock<10?`Only ${stock} left`:"In stock"):"Out of stock";stockNode.classList.toggle("low",stock>0&&stock<10);stockNode.classList.toggle("out",stock<=0);const attrs=$(".product-attributes",card);Object.entries(product.attributes||{}).forEach(([key,value])=>{const item=document.createElement("span"),label=document.createElement("b");item.className="attribute";label.textContent=`${humanize(key)}: `;item.append(label,document.createTextNode(Array.isArray(value)?value.join(" · "):String(value)));attrs.append(item)});const buy=$(".buy-button",card);buy.disabled=stock<=0;buy.addEventListener("click",()=>preparePurchase(product));return card}
 
-function formatMoney(total, currency = "INR") {
-  return new Intl.NumberFormat("en-IN", { style: "currency", currency, maximumFractionDigits: 2 }).format(Number(total));
-}
+function createStatusCard(type,options={}){const card=$("#checkout-status-template").content.firstElementChild.cloneNode(true);const content={approved:{icon:"✓",label:"APPROVED",title:"🛡 Guarded Checkout",body:`<ul><li>Merchant price verified</li><li>Inventory verified</li><li>Within purchasing mandate</li></ul><p class="checkout-total">Order created${options.total?` · ${escapeHtml(options.total)}`:""}</p>`},confirmation:{icon:"!",label:"REQUIRES CONFIRMATION",title:"Human Confirmation Required",body:'<p>This purchase exceeds your automatic purchase limit.</p><button class="confirm-button" type="button">Review &amp; Confirm</button>'},blocked:{icon:"×",label:"BLOCKED",title:"Purchase Blocked",body:`<p>${escapeHtml(options.reason||"The purchase does not meet the active policy.")}</p>`}}[type];card.classList.add(type);$(".checkout-icon",card).textContent=content.icon;$(".checkout-label",card).textContent=content.label;$(".checkout-title",card).textContent=content.title;$(".checkout-body",card).innerHTML=content.body;$(".confirm-button",card)?.addEventListener("click",()=>showNote("Human confirmation UI is ready; no order was submitted in this preview."));return card}
 
-async function loadCatalog() {
-  const grid = $("#product-grid");
-  try {
-    const products = await getJson("/products");
-    $("#product-count").textContent = `${products.length} products`;
-    grid.innerHTML = products.map((product) => `
-      <section class="product-card">
-        <div class="product-top">
-          <div><h3>${escapeHtml(product.name)}</h3><span class="category">${escapeHtml(product.category)}</span></div>
-          <span class="price">${escapeHtml(formatMoney(product.price, product.currency))}</span>
-        </div>
-        <div class="product-meta"><span>SKU · ${escapeHtml(product.sku)}</span><span class="${Number(product.stock) < 10 ? "stock-low" : "stock-ok"}">${escapeHtml(product.stock)} in stock</span></div>
-      </section>`).join("");
-  } catch (error) {
-    grid.innerHTML = `<p class="loading error">Catalog unavailable. ${escapeHtml(error.message)}</p>`;
-  }
-}
+function renderConversation(merchant,products){$("#header-avatar").textContent=initials(merchant.name);$("#merchant-name").textContent=merchant.name;$("#merchant-category").textContent=merchant.category;$("#agent-status").hidden=!merchant.agent_ready;const conversation=$("#conversation");conversation.replaceChildren();const hello=document.createElement("div");hello.className="message-row";hello.innerHTML=`<span class="merchant-avatar message-avatar">${escapeHtml(initials(merchant.name))}</span><div class="message-bubble"><p>Hi! I’m the <strong>${escapeHtml(merchant.name)}</strong> shopping agent.</p><p>Tell me what you’re looking for.</p><span class="message-time">Now</span></div>`;conversation.append(hello);const results=document.createElement("section");results.className="result-block";results.innerHTML=`<p class="result-label">Explore ${escapeHtml(merchant.name)}</p><div class="product-results"></div>`;const grid=$(".product-results",results);products.length?products.forEach(product=>grid.append(createProductCard(product))):grid.innerHTML='<div class="store-empty"><strong>No products available</strong>This store’s catalog is currently empty.</div>';conversation.append(results);const activity=document.createElement("details");activity.className="activity";activity.innerHTML='<summary>View agent activity</summary><div class="activity-events"><span class="activity-event"><i></i>catalog_search</span><span class="activity-event"><i></i>Merchant catalog loaded</span><span class="activity-event"><i></i>Inventory checked</span></div>';conversation.append(activity);const showcase=document.createElement("section");showcase.className="component-showcase";showcase.innerHTML='<p class="showcase-title">Guarded checkout status previews</p><div class="status-grid"></div>';$(".status-grid",showcase).append(createStatusCard("approved",{total:"₹1,398"}),createStatusCard("confirmation"),createStatusCard("blocked",{reason:"Purchase exceeds the maximum allowed policy threshold."}));conversation.append(showcase);conversation.scrollTop=0}
 
-function updateScore(selector, progressSelector, value) {
-  $(selector).textContent = `${Number(value).toFixed(1)}%`;
-  $(progressSelector).style.width = `${Math.min(100, Math.max(0, Number(value)))}%`;
-}
+async function selectMerchant(id){if(!state.merchants.some(m=>m.merchant_id===id))return;state.selectedId=id;renderStores();const merchant=selectedMerchant();$("#merchant-name").textContent=merchant.name;$("#merchant-category").textContent=merchant.category;$("#header-avatar").textContent=initials(merchant.name);$("#conversation").innerHTML='<div class="conversation-loading"><span></span><p>Opening store conversation…</p></div>';try{let products=state.products.get(id);if(!products){products=await getJson(`/merchants/${encodeURIComponent(id)}/products`);state.products.set(id,products)}if(state.selectedId===id)renderConversation(merchant,products)}catch(error){if(state.selectedId===id)$("#conversation").innerHTML=`<div class="store-empty store-error"><strong>Couldn’t load this store</strong>${escapeHtml(error.message)}<br><button type="button" id="retry-store">Try again</button></div>`;$("#retry-store")?.addEventListener("click",()=>selectMerchant(id))}$("#agent-input").disabled=false;$("#agent-form button").disabled=false}
 
-async function loadReadiness() {
-  try {
-    const report = await getJson("/merchant/readiness");
-    updateScore("#original-score", "#original-progress", report.readiness_score);
-    $("#issue-count").textContent = report.issue_count;
-  } catch (error) {
-    $("#original-score").textContent = "Error";
-  }
-}
+function showNote(message){const note=$("#integration-note");note.textContent=message;note.hidden=false;clearTimeout(showNote.timer);showNote.timer=setTimeout(()=>note.hidden=true,5500)}
+function preparePurchase(product){$("#agent-input").value=`I’d like to buy ${product.name}`;$("#agent-input").focus();showNote("Purchase request prepared. Checkout remains inactive until the secure agent endpoint is connected.")}
+async function loadMerchants(){try{state.merchants=await getJson("/merchants");if(!Array.isArray(state.merchants))throw new Error("Invalid merchant response");state.selectedId=state.merchants[0]?.merchant_id||null;renderStores();if(state.selectedId)await selectMerchant(state.selectedId);else $("#conversation").innerHTML='<div class="store-empty"><strong>No stores available</strong>Available merchants will appear here.</div>'}catch(error){$("#store-list").setAttribute("aria-busy","false");$("#store-list").innerHTML=`<div class="store-empty store-error"><strong>Stores unavailable</strong>${escapeHtml(error.message)}<br><button type="button" id="retry-merchants">Try again</button></div>`;$("#retry-merchants")?.addEventListener("click",loadMerchants);$("#conversation").innerHTML='<div class="store-empty"><strong>Couldn’t open the inbox</strong>Reconnect to load your stores.</div>'}}
 
-async function loadRepairPreview(showDetails = false) {
-  const button = $("#repair-button");
-  const details = $("#repair-details");
-  button.disabled = true;
-  button.textContent = "Scanning catalog…";
-  try {
-    const preview = await getJson("/merchant/readiness/repair-preview");
-    updateScore("#autopilot-score", "#autopilot-progress", preview.after.readiness_score);
-    $("#repair-count").textContent = preview.repairs.length;
-    $("#unresolved-count").textContent = preview.unresolved_issues.length;
-    if (showDetails) {
-      details.hidden = false;
-      details.innerHTML = `<p><b>${preview.repairs.length} safe repairs</b> applied in preview (no source data changed).</p>${preview.repairs.map((repair) => `<p>${escapeHtml(repair.sku)} · ${escapeHtml(repair.field)} — ${escapeHtml(repair.reason)}</p>`).join("")}<p><b>${preview.unresolved_issues.length} unresolved issues</b> require merchant input.</p>`;
-    }
-  } catch (error) {
-    details.hidden = false;
-    details.innerHTML = `<p class="error">Repair preview unavailable. ${escapeHtml(error.message)}</p>`;
-  } finally {
-    button.disabled = false;
-    button.innerHTML = "Autopilot Repair Preview <span>↗</span>";
-  }
-}
-
-async function loadAudit() {
-  const body = $("#audit-body");
-  body.innerHTML = '<tr><td colspan="6" class="loading">Loading decisions…</td></tr>';
-  try {
-    const entries = await getJson("/audit");
-    if (!entries.length) {
-      body.innerHTML = '<tr><td colspan="6" class="empty">No policy decisions yet. Audit events will appear here.</td></tr>';
-      return;
-    }
-    body.innerHTML = [...entries].reverse().map((entry) => `
-      <tr><td>${escapeHtml(new Date(entry.timestamp).toLocaleString())}</td><td>${escapeHtml(entry.sku)}</td><td>${escapeHtml(entry.quantity)}</td><td>${escapeHtml(formatMoney(entry.total))}</td><td><span class="decision decision-${escapeHtml(entry.decision)}">${escapeHtml(entry.decision.replaceAll("_", " "))}</span></td><td>${escapeHtml(entry.reason)}</td></tr>`).join("");
-  } catch (error) {
-    body.innerHTML = `<tr><td colspan="6" class="empty error">Audit trail unavailable. ${escapeHtml(error.message)}</td></tr>`;
-  }
-}
-
-$("#agent-form").addEventListener("submit", (event) => {
-  event.preventDefault();
-  const input = $("#agent-input");
-  if (!input.value.trim()) return;
-  $("#conversation").insertAdjacentHTML("beforeend", `<div class="message-user">${escapeHtml(input.value.trim())}</div>`);
-  input.value = "";
-});
-$("#repair-button").addEventListener("click", () => loadRepairPreview(true));
-$("#refresh-audit").addEventListener("click", loadAudit);
-
-Promise.allSettled([loadCatalog(), loadReadiness(), loadRepairPreview(), loadAudit()]);
+$("#store-search").addEventListener("input",event=>{state.query=event.target.value;renderStores()});$("#agent-form").addEventListener("submit",event=>{event.preventDefault();const input=$("#agent-input"),value=input.value.trim();if(!value||!selectedMerchant())return;const row=document.createElement("div");row.className="message-row user";row.innerHTML=`<div class="message-bubble"><p>${escapeHtml(value)}</p><span class="message-time">Now · Preview</span></div>`;const conversation=$("#conversation");conversation.insertBefore(row,$(".component-showcase",conversation)||null);input.value="";showNote("Message saved in this preview. Secure agent chat integration is coming next.");row.scrollIntoView({behavior:"smooth",block:"nearest"})});loadMerchants();
