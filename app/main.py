@@ -8,6 +8,8 @@ from app.data.catalog import catalog
 from app.data.merchants import get_merchant_catalog, merchant_registry
 from app.data.raw_catalog import raw_catalog
 from app.models.order import OrderRequest
+from app.models.chat import AgentChatRequest, AgentChatResponse
+from app.agent import run_agent
 from app.models.readiness import MerchantResolutionRequest
 from app.services.audit_service import get_audit_logs, log_policy_decision
 from app.services.catalog_repair_service import repair_catalog
@@ -32,6 +34,23 @@ app = FastAPI(
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.post("/agent/chat", response_model=AgentChatResponse)
+async def agent_chat(request: AgentChatRequest):
+    if request.merchant_id not in merchant_registry:
+        raise HTTPException(status_code=404, detail="Merchant not found")
+    try:
+        return await run_agent(
+            request.message,
+            merchant_id=request.merchant_id,
+            conversation_history=[item.model_dump() for item in request.conversation_history],
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="The shopping agent is temporarily unavailable",
+        ) from exc
 
 @app.get("/")
 def root():

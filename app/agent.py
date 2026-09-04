@@ -12,6 +12,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from ollama import AsyncClient
 
+from app.models.chat import AgentChatResponse, AgentEvent
+
 
 MODEL = "qwen3.5:4b"
 MAX_TOOL_ROUNDS = 12
@@ -77,7 +79,7 @@ async def run_agent(
     merchant_id: str | None = None,
     conversation_history: list[Any] | None = None,
     ollama_client: AsyncClient | None = None,
-) -> str:
+) -> AgentChatResponse:
     """Run one user request through Ollama and the stdio MCP server."""
     server = _server_parameters()
     client = ollama_client or AsyncClient()
@@ -98,6 +100,9 @@ async def run_agent(
             messages: list[Any] = [{"role": "system", "content": instruction}]
             messages.extend(conversation_history or [])
             messages.append({"role": "user", "content": user_message})
+            events: list[AgentEvent] = []
+            products: list[dict[str, Any]] = []
+            order: dict[str, Any] | None = None
 
             for _ in range(MAX_TOOL_ROUNDS):
                 response = await client.chat(
@@ -112,12 +117,17 @@ async def run_agent(
                 if not calls:
                     if conversation_history is not None:
                         conversation_history[:] = messages[1:]
-                    return assistant_message.content or ""
+                    return AgentChatResponse(
+                        message=assistant_message.content or "",
+                        merchant_id=merchant_id or "",
+                        events=events,
+                        products=products,
+                        order=order,
+                    )
 
                 for call in calls:
                     name = call.function.name
                     arguments = dict(call.function.arguments)
-                    print(f"[tool] {name}")
 
                     schema = schemas.get(name)
                     if schema is None:
@@ -142,6 +152,23 @@ async def run_agent(
                         else:
                             result = await session.call_tool(name, arguments=arguments)
                             result_text = _tool_result_text(result)
+
+                    try:
+                        observed = json.loads(result_text)
+                    except (TypeError, json.JSONDecodeError):
+                        observed = None
+                    events.append(AgentEvent(
+                        type="tool_call", tool=name,
+                        status="rejected" if isinstance(observed, dict) and observed.get("error") else "completed",
+                    ))
+                    payload = observed.get("result", observed) if isinstance(observed, dict) else observed
+                    if name == "catalog_search" and isinstance(payload, list):
+                        products = [item for item in payload if isinstance(item, dict) and item.get("merchant_id") == merchant_id]
+                    if name == "create_order" and isinstance(payload, dict):
+                        order = payload
+                        decision = payload.get("policy_decision") or payload.get("decision")
+                        if decision:
+                            events.append(AgentEvent(type="policy", decision=str(decision)))
 
                     messages.append(
                         {"role": "tool", "tool_name": name, "content": result_text}
@@ -209,7 +236,7 @@ async def _cli() -> None:
                 merchant_id=selected["merchant_id"],
                 conversation_history=history,
             )
-            print(f"Agent: {answer}")
+            print(f"Agent: {answer.message}")
     except (EOFError, KeyboardInterrupt):
         print()
 
