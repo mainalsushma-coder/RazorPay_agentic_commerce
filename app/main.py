@@ -1,8 +1,17 @@
 import uuid
+
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 
 from app.data.catalog import catalog
 from app.models.order import OrderRequest
+from app.services.audit_service import get_audit_logs, log_policy_decision
+from app.services.policy_engine import (
+    MAX_SPEND_LIMIT,
+    PolicyDecision,
+    evaluate_order_policy,
+)
+from app.services.razorpay_service import create_razorpay_order
 
 
 app = FastAPI(
@@ -10,6 +19,7 @@ app = FastAPI(
     version="0.1.0"
 )
 
+# Temporary in-memory order storage
 orders = {}
 
 
@@ -42,14 +52,20 @@ def search_products(q: str):
 
 @app.get("/inventory/{sku}")
 def check_inventory(sku: str):
-
     for product in catalog:
         if product.sku == sku:
+
+            stock = (
+                int(product.stock)
+                if isinstance(product.stock, str)
+                else product.stock
+            )
+
             return {
                 "sku": product.sku,
                 "name": product.name,
-                "stock": product.stock,
-                "available": int(product.stock) > 0 if isinstance(product.stock, str) else product.stock > 0
+                "stock": stock,
+                "available": stock > 0
             }
 
     raise HTTPException(
@@ -60,52 +76,141 @@ def check_inventory(sku: str):
 
 @app.post("/orders")
 def create_order(order_req: OrderRequest):
+
+    # Validate quantity
     if order_req.quantity <= 0:
         raise HTTPException(
             status_code=400,
             detail="Quantity must be greater than zero"
         )
 
+    # Find product
     product = None
+
     for p in catalog:
         if p.sku == order_req.sku:
             product = p
             break
 
-    if not product:
+    if product is None:
         raise HTTPException(
             status_code=404,
             detail="Product not found"
         )
 
-    stock = int(product.stock) if isinstance(product.stock, str) else product.stock
+    # Convert stock to integer if necessary
+    stock = (
+        int(product.stock)
+        if isinstance(product.stock, str)
+        else product.stock
+    )
+
+    # Check inventory
     if stock < order_req.quantity:
         raise HTTPException(
             status_code=400,
             detail="Insufficient stock"
         )
 
-    order_id = str(uuid.uuid4())
+    # Calculate total
     unit_price = float(product.price)
     total = unit_price * order_req.quantity
 
-    order = {
+    policy_result = evaluate_order_policy(
+        sku=order_req.sku,
+        quantity=order_req.quantity,
+        unit_price=unit_price,
+        catalog_product=product,
+    )
+
+    if policy_result["decision"] == PolicyDecision.BLOCKED:
+        log_policy_decision(
+            sku=product.sku,
+            quantity=order_req.quantity,
+            total=total,
+            decision=PolicyDecision.BLOCKED.value,
+            reason=policy_result["reason"],
+        )
+        return JSONResponse(
+            status_code=403,
+            content={
+                "decision": PolicyDecision.BLOCKED.value,
+                "reason": policy_result["reason"],
+            },
+        )
+
+    if policy_result["decision"] == PolicyDecision.REQUIRES_CONFIRMATION:
+        order_id = str(uuid.uuid4())
+        new_order = {
+            "order_id": order_id,
+            "razorpay_order_id": None,
+            "sku": product.sku,
+            "product_name": product.name,
+            "quantity": order_req.quantity,
+            "unit_price": unit_price,
+            "total": total,
+            "currency": product.currency,
+            "status": "requires_confirmation",
+            "policy_decision": PolicyDecision.REQUIRES_CONFIRMATION.value,
+        }
+        orders[order_id] = new_order
+
+        log_policy_decision(
+            sku=product.sku,
+            quantity=order_req.quantity,
+            total=total,
+            decision=PolicyDecision.REQUIRES_CONFIRMATION.value,
+            reason=policy_result["reason"],
+        )
+        return new_order
+
+    # Generate internal order ID
+    order_id = str(uuid.uuid4())
+
+    # Create Razorpay order
+    razorpay_order = create_razorpay_order(
+        amount_rupees=total,
+        receipt=order_id
+    )
+
+    log_policy_decision(
+        sku=product.sku,
+        quantity=order_req.quantity,
+        total=total,
+        decision=PolicyDecision.APPROVED.value,
+        reason=policy_result["reason"],
+        order_id=order_id,
+        razorpay_order_id=razorpay_order["id"],
+    )
+
+    # Create our internal order
+    new_order = {
         "order_id": order_id,
+        "razorpay_order_id": razorpay_order["id"],
         "sku": product.sku,
         "product_name": product.name,
         "quantity": order_req.quantity,
         "unit_price": unit_price,
         "total": total,
         "currency": product.currency,
-        "status": "created"
+        "status": "created",
+        "policy_decision": PolicyDecision.APPROVED.value,
     }
 
-    orders[order_id] = order
-    return order
+    # Save order temporarily
+    orders[order_id] = new_order
+
+    return new_order
+
+
+@app.get("/audit")
+def audit():
+    return get_audit_logs()
 
 
 @app.get("/orders/{order_id}")
 def get_order(order_id: str):
+
     if order_id in orders:
         return orders[order_id]
 
@@ -113,3 +218,79 @@ def get_order(order_id: str):
         status_code=404,
         detail="Order not found"
     )
+
+
+@app.post("/orders/{order_id}/confirm")
+def confirm_order(order_id: str):
+    if order_id not in orders:
+        raise HTTPException(
+            status_code=404,
+            detail="Order not found"
+        )
+
+    order = orders[order_id]
+    if order["status"] != "requires_confirmation":
+        raise HTTPException(
+            status_code=400,
+            detail="Order does not require confirmation"
+        )
+
+    product = None
+    for p in catalog:
+        if p.sku == order["sku"]:
+            product = p
+            break
+
+    if product is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Product not found"
+        )
+
+    quantity = order["quantity"]
+    if quantity <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Quantity must be greater than zero"
+        )
+
+    stock = int(product.stock)
+    if stock < quantity:
+        raise HTTPException(
+            status_code=400,
+            detail="Insufficient stock"
+        )
+
+    unit_price = float(product.price)
+    total = unit_price * quantity
+    if total > MAX_SPEND_LIMIT:
+        raise HTTPException(
+            status_code=403,
+            detail="Order exceeds maximum spend limit"
+        )
+
+    razorpay_order = create_razorpay_order(
+        amount_rupees=total,
+        receipt=order_id,
+    )
+
+    order.update({
+        "razorpay_order_id": razorpay_order["id"],
+        "product_name": product.name,
+        "unit_price": unit_price,
+        "total": total,
+        "currency": product.currency,
+        "status": "created",
+    })
+
+    log_policy_decision(
+        sku=product.sku,
+        quantity=quantity,
+        total=total,
+        decision="human_confirmed",
+        reason="Human confirmed order above automatic approval limit",
+        order_id=order_id,
+        razorpay_order_id=razorpay_order["id"],
+    )
+
+    return order
