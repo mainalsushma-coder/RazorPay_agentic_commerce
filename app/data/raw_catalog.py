@@ -1,4 +1,4 @@
-"""Unnormalized merchant data used only for catalog-readiness scanning."""
+"""Unnormalized demo input staged through the authoritative import lifecycle."""
 
 
 raw_catalog = [

@@ -74,33 +74,37 @@ def test_unknown_scope_and_skus_are_rejected_without_payment(monkeypatch, payloa
 def test_confirmation_revalidates_stock_without_payment(monkeypatch):
     monkeypatch.setattr(main, "create_razorpay_order", never_pay)
     pending = client.post("/orders", json={"sku": "SKIN001", "quantity": 3}).json()
-    product = get_merchant_catalog("glowcare")[0]
-    monkeypatch.setattr(product, "stock", 2)
+    active = get_merchant_catalog("glowcare")
+    product = active[0].model_copy(update={"stock": 2})
+    main.catalog_repository.replace_catalog("glowcare", [product, *active[1:]])
 
     response = client.post(f"/orders/{pending['order_id']}/confirm")
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Insufficient stock"
     assert orders[pending["order_id"]]["status"] == "requires_confirmation"
+    main.catalog_repository.replace_catalog("glowcare", active)
 
 
 def test_confirmation_rejects_changed_price_without_payment(monkeypatch):
     monkeypatch.setattr(main, "create_razorpay_order", never_pay)
     pending = client.post("/orders", json={"sku": "SKIN001", "quantity": 3}).json()
-    product = get_merchant_catalog("glowcare")[0]
-    monkeypatch.setattr(product, "price", 799.0)
+    active = get_merchant_catalog("glowcare")
+    product = active[0].model_copy(update={"price": 799.0})
+    main.catalog_repository.replace_catalog("glowcare", [product, *active[1:]])
 
     response = client.post(f"/orders/{pending['order_id']}/confirm")
 
     assert response.status_code == 409
     assert response.json()["detail"] == "Product price changed; create a new order"
     assert orders[pending["order_id"]]["status"] == "requires_confirmation"
+    main.catalog_repository.replace_catalog("glowcare", active)
 
 
 def test_confirmation_rejects_invalid_catalog_price_without_payment(monkeypatch):
     monkeypatch.setattr(main, "create_razorpay_order", never_pay)
     pending = client.post("/orders", json={"sku": "SKIN001", "quantity": 3}).json()
-    product = get_merchant_catalog("glowcare")[0]
+    product = main.catalog_repository._catalogs["glowcare"][0]
     monkeypatch.setattr(product, "price", "not-a-price")
 
     response = client.post(f"/orders/{pending['order_id']}/confirm")

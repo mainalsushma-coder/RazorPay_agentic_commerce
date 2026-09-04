@@ -63,6 +63,14 @@ def create_order(
     unit_price = float(product.price)
     total = unit_price * quantity
 
+    if total <= 0:
+        log_policy_decision(
+            sku=product.sku, quantity=quantity, total=total,
+            decision=PolicyDecision.BLOCKED.value,
+            reason="Payment amount must be greater than zero",
+        )
+        raise OrderServiceError(400, "Payment amount must be greater than zero")
+
     if stock < quantity:
         log_policy_decision(
             sku=product.sku,

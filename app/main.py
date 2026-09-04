@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import Lock
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import ValidationError
@@ -6,20 +7,15 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.data.catalog import catalog
-from app.data.merchants import get_merchant_catalog
 from app.data.raw_catalog import raw_catalog
-from app.models.order import OrderRequest
+from app.models.order import DeterministicOrderRequest, OrderRequest
 from app.models.product import Product
 from app.models.merchant import Merchant
 from app.models.chat import AgentChatRequest, AgentChatResponse
 from app.agent import run_agent
 from app.models.readiness import MerchantResolutionRequest
 from app.services.audit_service import get_audit_logs, log_policy_decision
-from app.services.catalog_repair_service import repair_catalog
-from app.services.catalog_resolution_service import (
-    CatalogResolutionError,
-    apply_merchant_resolutions,
-)
+from app.services.catalog_resolution_service import CatalogResolutionError
 from app.services.order_service import (
     OrderServiceError,
     create_order as create_guarded_order,
@@ -39,6 +35,25 @@ app = FastAPI(
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+_demo_import_id: str | None = None
+_confirmation_locks: dict[str, Lock] = {}
+_confirmation_locks_guard = Lock()
+
+
+def _new_demo_import() -> str:
+    global _demo_import_id
+    _demo_import_id = catalog_import_service.stage("glowcare", raw_catalog)["import_id"]
+    return _demo_import_id
+
+
+def _demo_import() -> str:
+    return _demo_import_id or _new_demo_import()
+
+
+def _order_lock(order_id: str) -> Lock:
+    with _confirmation_locks_guard:
+        return _confirmation_locks.setdefault(order_id, Lock())
 
 
 @app.post("/agent/chat", response_model=AgentChatResponse)
@@ -99,56 +114,60 @@ def merchant_portal():
 
 @app.get("/merchant/readiness")
 def merchant_readiness():
-    return scan_catalog_readiness(raw_catalog)
+    staged = catalog_import_service.get("glowcare", _new_demo_import())
+    return catalog_import_service.summary(staged)["readiness"]
 
 
 @app.get("/merchant/readiness/repair-preview")
 def merchant_readiness_repair_preview():
-    before = scan_catalog_readiness(raw_catalog)
-    repair_result = repair_catalog(raw_catalog)
-    repaired_catalog = repair_result["catalog"]
-    after = scan_catalog_readiness(repaired_catalog)
-    return {
-        "before": before,
-        "after": after,
-        "repairs": repair_result["repairs"],
-        "unresolved_issues": repair_result["unresolved_issues"],
-        "repaired_catalog": repaired_catalog,
-    }
+    import_id = _new_demo_import()
+    result = catalog_import_service.repair("glowcare", import_id)
+    return {**result, "import_id": import_id, "repaired_catalog": result["catalog"]}
 
 
 @app.post("/merchant/readiness/resolve-preview")
 def merchant_readiness_resolve_preview(request: MerchantResolutionRequest):
-    before = scan_catalog_readiness(raw_catalog)
-    repair_result = repair_catalog(raw_catalog)
-    repaired_catalog = repair_result["catalog"]
-    after_autopilot = scan_catalog_readiness(repaired_catalog)
-
     try:
-        resolution_result = apply_merchant_resolutions(
-            repaired_catalog,
-            repair_result["unresolved_issues"],
+        import_id = _demo_import()
+        staged = catalog_import_service.get("glowcare", import_id)
+        before = scan_catalog_readiness(raw_catalog)
+        if not staged.repairs:
+            catalog_import_service.repair("glowcare", import_id)
+        after_autopilot = scan_catalog_readiness(staged.catalog)
+        resolution_result = catalog_import_service.resolve(
+            "glowcare", import_id,
             [resolution.model_dump() for resolution in request.resolutions],
         )
     except CatalogResolutionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     resolved_catalog = resolution_result["catalog"]
-    final = scan_catalog_readiness(resolved_catalog)
+    final = resolution_result["final"]
     return {
         "before": before,
         "after_autopilot": after_autopilot,
         "final": final,
-        "repairs": repair_result["repairs"],
+        "repairs": staged.repairs,
         "merchant_resolutions": resolution_result["merchant_resolutions"],
         "remaining_unresolved_issues": resolution_result[
             "remaining_unresolved_issues"
         ],
         "resolved_catalog": resolved_catalog,
+        "import_id": import_id,
     }
 
 
-@app.get("/products")
+@app.post("/merchant/readiness/activate")
+def activate_demo_readiness():
+    try:
+        return catalog_import_service.activate(
+            "glowcare", _demo_import(), catalog_repository
+        )
+    except CatalogImportError as exc:
+        _import_error(exc, 409)
+
+
+@app.get("/products", deprecated=True)
 def get_products():
     return catalog_repository.get_catalog("glowcare") or []
 
@@ -183,22 +202,31 @@ def search_merchant_products(merchant_id: str, q: str):
     return merchant_catalog
 
 
-@app.post("/merchants/{merchant_id}/products", status_code=201)
+@app.post("/merchants/{merchant_id}/products", status_code=202)
 def add_merchant_product(merchant_id: str, product: Product):
-    try:
-        return catalog_repository.create_product(merchant_id, product)
-    except CatalogRepositoryError as exc:
-        status = 404 if str(exc) == "Merchant not found" else 409
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    active = catalog_repository.get_catalog(merchant_id)
+    if active is None:
+        raise HTTPException(status_code=404, detail="Merchant not found")
+    if any(item.sku == product.sku for item in active):
+        raise HTTPException(status_code=409, detail="Duplicate SKU within merchant catalog")
+    return catalog_import_service.stage(
+        merchant_id, [p.model_dump() for p in active] + [product.model_dump()]
+    )
 
 
 @app.put("/merchants/{merchant_id}/products/{sku}")
 def update_merchant_product(merchant_id: str, sku: str, product: Product):
-    try:
-        return catalog_repository.update_product(merchant_id, sku, product)
-    except CatalogRepositoryError as exc:
-        status = 409 if "Duplicate" in str(exc) else 404
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    active = catalog_repository.get_catalog(merchant_id)
+    if active is None:
+        raise HTTPException(status_code=404, detail="Merchant not found")
+    index = next((i for i, item in enumerate(active) if item.sku == sku), None)
+    if index is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    if product.sku != sku and any(item.sku == product.sku for item in active):
+        raise HTTPException(status_code=409, detail="Duplicate SKU within merchant catalog")
+    records = [p.model_dump() for p in active]
+    records[index] = product.model_dump()
+    return catalog_import_service.stage(merchant_id, records)
 
 
 def _import_error(exc: Exception, status_code: int = 400):
@@ -270,12 +298,12 @@ def activate_import(merchant_id: str, import_id: str):
         _import_error(exc, 409)
 
 
-@app.get("/products/search")
+@app.get("/products/search", deprecated=True)
 def search_products(q: str):
     return catalog_repository.search_products("glowcare", q) or []
 
 
-@app.get("/inventory/{sku}")
+@app.get("/inventory/{sku}", deprecated=True)
 def check_inventory(sku: str):
     for product in catalog_repository.get_catalog("glowcare") or []:
         if product.sku == sku:
@@ -322,6 +350,12 @@ def create_order(order_req: OrderRequest):
     return result
 
 
+@app.post("/buyer/orders")
+def deterministic_buyer_order(order_req: DeterministicOrderRequest):
+    """Execute an explicit product-card selection without LLM reinterpretation."""
+    return create_order(OrderRequest(**order_req.model_dump()))
+
+
 @app.get("/audit")
 def audit():
     return get_audit_logs()
@@ -341,6 +375,11 @@ def get_order(order_id: str):
 
 @app.post("/orders/{order_id}/confirm")
 def confirm_order(order_id: str):
+    with _order_lock(order_id):
+        return _confirm_order_guarded(order_id)
+
+
+def _confirm_order_guarded(order_id: str):
     if order_id not in orders:
         raise HTTPException(
             status_code=404,
@@ -354,12 +393,7 @@ def confirm_order(order_id: str):
             detail="Order does not require confirmation"
         )
 
-    merchant_catalog = get_merchant_catalog(order["merchant_id"])
-    product = None
-    for p in merchant_catalog or []:
-        if p.sku == order["sku"]:
-            product = p
-            break
+    product = catalog_repository.find_product(order["merchant_id"], order["sku"])
 
     if product is None:
         raise HTTPException(
@@ -396,6 +430,10 @@ def confirm_order(order_id: str):
         )
 
     total = unit_price * quantity
+    if total <= 0:
+        raise HTTPException(
+            status_code=400, detail="Payment amount must be greater than zero"
+        )
     if total > MAX_SPEND_LIMIT:
         raise HTTPException(
             status_code=403,

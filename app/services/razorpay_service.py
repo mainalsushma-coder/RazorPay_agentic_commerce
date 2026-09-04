@@ -14,6 +14,8 @@ client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
 
 def create_razorpay_order(amount_rupees: float, receipt: str):
+    if amount_rupees <= 0:
+        raise ValueError("Payment amount must be greater than zero")
     amount_paise = round(amount_rupees * 100)
 
     data = {
