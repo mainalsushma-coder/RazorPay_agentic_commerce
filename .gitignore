@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv/
+.playwright-browsers/
 
 # Environment variables / secrets
 .env

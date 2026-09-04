@@ -11,3 +11,8 @@ dependencies = [
     "python-dotenv>=1.2.3",
     "razorpay>=2.0.1",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest-playwright>=0.9.0",
+]
