@@ -2,14 +2,22 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from app.data.catalog import catalog
+from app.data.raw_catalog import raw_catalog
 from app.models.order import OrderRequest
+from app.models.readiness import MerchantResolutionRequest
 from app.services.audit_service import get_audit_logs, log_policy_decision
+from app.services.catalog_repair_service import repair_catalog
+from app.services.catalog_resolution_service import (
+    CatalogResolutionError,
+    apply_merchant_resolutions,
+)
 from app.services.order_service import (
     OrderServiceError,
     create_order as create_guarded_order,
     orders,
 )
 from app.services.policy_engine import MAX_SPEND_LIMIT
+from app.services.readiness_service import scan_catalog_readiness
 from app.services.razorpay_service import create_razorpay_order
 
 
@@ -22,6 +30,57 @@ app = FastAPI(
 def root():
     return {
         "message": "Agent Storefront Autopilot API is running"
+    }
+
+
+@app.get("/merchant/readiness")
+def merchant_readiness():
+    return scan_catalog_readiness(raw_catalog)
+
+
+@app.get("/merchant/readiness/repair-preview")
+def merchant_readiness_repair_preview():
+    before = scan_catalog_readiness(raw_catalog)
+    repair_result = repair_catalog(raw_catalog)
+    repaired_catalog = repair_result["catalog"]
+    after = scan_catalog_readiness(repaired_catalog)
+    return {
+        "before": before,
+        "after": after,
+        "repairs": repair_result["repairs"],
+        "unresolved_issues": repair_result["unresolved_issues"],
+        "repaired_catalog": repaired_catalog,
+    }
+
+
+@app.post("/merchant/readiness/resolve-preview")
+def merchant_readiness_resolve_preview(request: MerchantResolutionRequest):
+    before = scan_catalog_readiness(raw_catalog)
+    repair_result = repair_catalog(raw_catalog)
+    repaired_catalog = repair_result["catalog"]
+    after_autopilot = scan_catalog_readiness(repaired_catalog)
+
+    try:
+        resolution_result = apply_merchant_resolutions(
+            repaired_catalog,
+            repair_result["unresolved_issues"],
+            [resolution.model_dump() for resolution in request.resolutions],
+        )
+    except CatalogResolutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    resolved_catalog = resolution_result["catalog"]
+    final = scan_catalog_readiness(resolved_catalog)
+    return {
+        "before": before,
+        "after_autopilot": after_autopilot,
+        "final": final,
+        "repairs": repair_result["repairs"],
+        "merchant_resolutions": resolution_result["merchant_resolutions"],
+        "remaining_unresolved_issues": resolution_result[
+            "remaining_unresolved_issues"
+        ],
+        "resolved_catalog": resolved_catalog,
     }
 
 
