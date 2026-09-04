@@ -17,7 +17,7 @@ from app.models.chat import AgentChatResponse, AgentEvent
 
 MODEL = "qwen3.5:4b"
 MAX_TOOL_ROUNDS = 12
-SYSTEM_INSTRUCTION = """You are a shopping agent for the Agent Storefront Autopilot.
+SYSTEM_INSTRUCTION = """You are a shopping agent for Bound.
 Multiple merchants are available. Every catalog search and order must be
 associated with a merchant. Use list_merchants to discover valid merchant IDs,
 never invent merchant IDs, and never mix products between merchants.
@@ -32,6 +32,21 @@ Human confirmation is not an available tool, so do not offer to perform or
 finalize that confirmation yourself.
 If an order is blocked, explain the policy reason.
 Never claim payment/order success unless the tool reports success."""
+
+
+def _structured_order_message(order: dict[str, Any] | None, fallback: str) -> str:
+    """Keep model prose concise when structured order truth owns the UI."""
+    if not order:
+        return fallback
+    status = order.get("status")
+    decision = order.get("policy_decision") or order.get("decision")
+    if status == "created":
+        return "Purchase approved within your mandate."
+    if status == "requires_confirmation":
+        return "This purchase requires your confirmation."
+    if decision == "blocked":
+        return "Bound Guardrails blocked the transaction."
+    return fallback
 
 
 def _server_parameters() -> StdioServerParameters:
@@ -118,7 +133,9 @@ async def run_agent(
                     if conversation_history is not None:
                         conversation_history[:] = messages[1:]
                     return AgentChatResponse(
-                        message=assistant_message.content or "",
+                        message=_structured_order_message(
+                            order, assistant_message.content or ""
+                        ),
                         merchant_id=merchant_id or "",
                         events=events,
                         products=products,

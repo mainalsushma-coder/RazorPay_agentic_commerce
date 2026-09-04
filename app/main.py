@@ -25,7 +25,7 @@ from app.services.order_service import (
     create_order as create_guarded_order,
     orders,
 )
-from app.services.policy_engine import MAX_SPEND_LIMIT
+from app.services.policy_engine import AUTO_APPROVE_LIMIT, MAX_SPEND_LIMIT
 from app.services.readiness_service import scan_catalog_readiness
 from app.services.razorpay_service import create_razorpay_order
 from app.repositories.catalog_repository import CatalogRepositoryError, catalog_repository
@@ -67,6 +67,29 @@ def root():
 @app.get("/dashboard", include_in_schema=False)
 def dashboard():
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/login", include_in_schema=False)
+def login():
+    return FileResponse(STATIC_DIR / "login.html")
+
+
+@app.get("/profile", include_in_schema=False)
+def buyer_profile():
+    return FileResponse(STATIC_DIR / "profile.html")
+
+
+@app.get("/buyer/mandate")
+def buyer_mandate():
+    """Read-only metadata for the demo buyer's authoritative purchase policy."""
+    return {
+        "label": "Current demo mandate",
+        "currency": "INR",
+        "automatic_purchase_limit": AUTO_APPROVE_LIMIT,
+        "maximum_transaction": MAX_SPEND_LIMIT,
+        "above_automatic_limit": "requires_confirmation",
+        "above_maximum_transaction": "blocked",
+    }
 
 
 @app.get("/merchant-portal", include_in_schema=False)

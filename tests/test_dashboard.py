@@ -11,8 +11,8 @@ def test_dashboard_loads_and_root_behavior_is_preserved():
     root = client.get("/")
 
     assert dashboard.status_code == 200
-    assert "Agent Storefront Autopilot" in dashboard.text
-    assert "AI commerce with guarded checkout" in dashboard.text
+    assert "BOUND" in dashboard.text
+    assert "Protected by Bound Guardrails" in dashboard.text
     assert root.status_code == 200
     assert root.json() == {
         "message": "Agent Storefront Autopilot API is running"
