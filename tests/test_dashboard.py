@@ -6,18 +6,13 @@ from app.main import app
 client = TestClient(app)
 
 
-def test_dashboard_loads_and_root_behavior_is_preserved():
+def test_dashboard_loads():
     dashboard = client.get("/dashboard")
-    root = client.get("/")
 
     assert dashboard.status_code == 200
     assert "BOUND" in dashboard.text
     assert "What should Bound shop for you?" in dashboard.text
     assert "Merchant Portal" not in dashboard.text
-    assert root.status_code == 200
-    assert root.json() == {
-        "message": "Agent Storefront Autopilot API is running"
-    }
 
 
 def test_dashboard_assets_are_served():

@@ -9,10 +9,37 @@ client = TestClient(app)
 
 def test_demo_entry_has_buyer_and_merchant_paths():
     page = client.get("/login")
+    root = client.get("/")
     assert page.status_code == 200
+    assert root.status_code == 200
+    assert root.headers["content-type"].startswith("text/html")
+    assert root.content == page.content
+    assert "BOUND" in root.text
     assert 'href="/buyer-login"' in page.text
     assert 'href="/merchant-login"' in page.text
     assert "Bound prototype" in page.text
+
+
+def test_health_returns_json():
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+    assert response.json() == {"status": "ok"}
+
+
+def test_prototype_entry_routes_keep_workspace_destinations():
+    buyer = client.get("/buyer-login")
+    merchant = client.get("/merchant-login")
+    assert buyer.status_code == 200
+    assert "Demo Buyer" in buyer.text
+    assert "location.href='/dashboard'" in buyer.text
+    assert merchant.status_code == 200
+    assert "location.href='/merchant-portal'" in merchant.text
+    for path in ("/dashboard", "/merchant-portal"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/html")
+        assert "BOUND" in response.text
 
 
 def test_profile_and_authoritative_mandate_metadata():

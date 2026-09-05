@@ -79,11 +79,9 @@ async def agent_chat(request: AgentChatRequest):
             detail="The shopping agent is temporarily unavailable",
         ) from exc
 
-@app.get("/")
-def root():
-    return {
-        "message": "Agent Storefront Autopilot API is running"
-    }
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 
 @app.get("/dashboard", include_in_schema=False)
@@ -91,6 +89,7 @@ def dashboard():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/", include_in_schema=False)
 @app.get("/login", include_in_schema=False)
 def login():
     return FileResponse(STATIC_DIR / "login.html")
