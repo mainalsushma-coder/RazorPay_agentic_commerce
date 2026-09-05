@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from collections.abc import Sequence
 from typing import Any
@@ -60,9 +61,12 @@ def _structured_order_message(order: dict[str, Any] | None, fallback: str) -> st
 
 
 def _server_parameters() -> StdioServerParameters:
+    # MCP's default environment only inherits a small allowlist of variables.
+    child_env = os.environ.copy()
     return StdioServerParameters(
         command=sys.executable,
         args=["-m", "app.mcp_server"],
+        env=child_env,
     )
 
 
