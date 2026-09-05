@@ -102,3 +102,21 @@ def test_global_agent_ignores_prior_source_conversation(monkeypatch):
     asyncio.run(agent.run_agent("Buy Vitamin C serum", conversation_history=[
         {"role": "assistant", "content": "Selected Shopify snowboard"},
     ], ollama_client=InspectModel()))
+
+
+def test_tool_result_text_supports_real_mcp_call_tool_result():
+    import json
+    from types import SimpleNamespace
+    from mcp.types import CallToolResult, TextContent
+
+    real_result = CallToolResult(
+        content=[TextContent(type="text", text="Catalog error")], is_error=True
+    )
+    parsed_real = json.loads(agent._tool_result_text(real_result))
+    assert parsed_real["is_error"] is True
+    assert parsed_real["content"] == ["Catalog error"]
+
+    mock_result = SimpleNamespace(content=[SimpleNamespace(text="Mock error")], isError=True)
+    parsed_mock = json.loads(agent._tool_result_text(mock_result))
+    assert parsed_mock["is_error"] is True
+    assert parsed_mock["content"] == ["Mock error"]

@@ -91,7 +91,10 @@ def _tool_result_text(result: Any) -> str:
         text = getattr(item, "text", None)
         parts.append(text if text is not None else item.model_dump(mode="json"))
     return json.dumps(
-        {"is_error": bool(result.isError), "content": parts},
+        {
+            "is_error": bool(getattr(result, "is_error", getattr(result, "isError", False))),
+            "content": parts,
+        },
         ensure_ascii=False,
         default=str,
     )
