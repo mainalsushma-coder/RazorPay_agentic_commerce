@@ -1,11 +1,17 @@
 import uuid
+import os
+from datetime import datetime, timezone
 from collections.abc import Callable
 from typing import Any
 
 from app.repositories.catalog_repository import catalog_repository
 from app.services.audit_service import log_policy_decision
+from app.services.audit_service import log_audit_event
+from app.services.payment_executor import PaymentExecutor, build_payment_executor
 from app.services.policy_engine import PolicyDecision, evaluate_order_policy
 from app.services.razorpay_service import create_razorpay_order
+
+_DEFAULT_SDK_CREATOR = create_razorpay_order
 
 
 # Temporary in-memory order storage shared by the API and MCP server.
@@ -25,6 +31,7 @@ def create_order(
     *,
     merchant_id: str = "glowcare",
     payment_order_creator: Callable[..., dict[str, Any]] | None = None,
+    payment_executor: PaymentExecutor | None = None,
 ) -> dict[str, Any]:
     """Create an order through catalog validation and the purchase policy."""
     if quantity <= 0:
@@ -36,6 +43,23 @@ def create_order(
             reason="Quantity must be greater than zero",
         )
         raise OrderServiceError(400, "Quantity must be greater than zero")
+
+    from app.services.commerce_catalog_service import get_commerce_merchant
+
+    commerce_merchant = get_commerce_merchant(merchant_id)
+    if commerce_merchant is not None and commerce_merchant.source == "shopify":
+        return {
+            "decision": "external_checkout_required",
+            "merchant_id": merchant_id,
+            "sku": sku,
+            "quantity": quantity,
+            "status": "external_checkout_required",
+            "reason": "External checkout connection required",
+            "checkout_capability": {
+                "type": "external", "provider": "shopify", "execution_enabled": False,
+            },
+            "mandate": {"applied": False, "reason": "The current purchase mandate is INR-only"},
+        }
 
     merchant = catalog_repository.get_merchant(merchant_id)
     if merchant is None:
@@ -104,10 +128,17 @@ def create_order(
         }
 
     order_id = str(uuid.uuid4())
+    metadata = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "merchant_name": merchant.name,
+        "image_url": product.attributes.get("image_url"),
+        "payment_mode": "test" if os.getenv("RAZORPAY_KEY_ID", "").startswith("rzp_test_") else "unknown",
+    }
 
     if decision == PolicyDecision.REQUIRES_CONFIRMATION:
         new_order = {
             "order_id": order_id,
+            **metadata,
             "razorpay_order_id": None,
             "merchant_id": merchant_id,
             "sku": product.sku,
@@ -126,16 +157,34 @@ def create_order(
             total=total,
             decision=PolicyDecision.REQUIRES_CONFIRMATION.value,
             reason=reason,
+            order_id=order_id,
         )
         return new_order
 
-    creator = payment_order_creator or create_razorpay_order
-    razorpay_order = creator(
+    if payment_executor is not None:
+        executor = payment_executor
+    elif payment_order_creator is not None:
+        from app.services.payment_executor import RazorpaySDKExecutor
+        executor = RazorpaySDKExecutor(payment_order_creator)
+    elif create_razorpay_order is not _DEFAULT_SDK_CREATOR:
+        # Preserve the established test/custom-injection seam without contacting MCP.
+        from app.services.payment_executor import RazorpaySDKExecutor
+        executor = RazorpaySDKExecutor(create_razorpay_order)
+    else:
+        executor = build_payment_executor(create_razorpay_order)
+    try:
+        razorpay_order = executor.create_order(
         amount_rupees=total,
+        currency=product.currency,
         receipt=order_id,
-    )
+        )
+    except Exception:
+        log_audit_event("payment_execution_failed", order_id=order_id)
+        raise
+    selected = razorpay_order.get("payment_executor", "razorpay_sdk")
     new_order = {
         "order_id": order_id,
+        **metadata,
         "razorpay_order_id": razorpay_order["id"],
         "merchant_id": merchant_id,
         "sku": product.sku,
@@ -146,6 +195,7 @@ def create_order(
         "currency": product.currency,
         "status": "created",
         "policy_decision": PolicyDecision.APPROVED.value,
+        "payment_executor": selected,
     }
     orders[order_id] = new_order
     log_policy_decision(
@@ -156,5 +206,7 @@ def create_order(
         reason=reason,
         order_id=order_id,
         razorpay_order_id=razorpay_order["id"],
+        payment_executor=selected,
+        payment_executor_fallback=razorpay_order.get("payment_executor_fallback", False),
     )
     return new_order

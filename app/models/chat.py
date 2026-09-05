@@ -13,7 +13,7 @@ class ChatHistoryMessage(BaseModel):
 class AgentChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    merchant_id: str = Field(min_length=1, max_length=100)
+    merchant_id: str | None = Field(default=None, min_length=1, max_length=100)
     message: str = Field(min_length=1, max_length=20_000)
     conversation_history: list[ChatHistoryMessage] = Field(
         default_factory=list, max_length=100
@@ -31,7 +31,7 @@ class AgentEvent(BaseModel):
 
 class AgentChatResponse(BaseModel):
     message: str
-    merchant_id: str
+    merchant_id: str = ""
     events: list[AgentEvent] = Field(default_factory=list)
     products: list[dict[str, Any]] = Field(default_factory=list)
     order: dict[str, Any] | None = None

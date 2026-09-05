@@ -63,6 +63,21 @@ seed_merchants = [
     (techhub_merchant, techhub_catalog),
 ]
 
+# External merchants are deliberately not seeded into CatalogRepository. Their
+# product truth remains at the source and is fetched only through its official
+# commerce interface.
+external_merchants = [
+    Merchant(
+        merchant_id="bound-commerce-test-shopify",
+        name="BOUND Commerce Test",
+        description="Live development-store catalog connected through Shopify",
+        category="Sporting Goods",
+        agent_ready=True,
+        source="shopify",
+        source_config={"store_domain": "bound-commerce-test.myshopify.com"},
+    )
+]
+
 # Compatibility view for older callers/tests. New application code uses the repository.
 merchant_registry = {
     merchant.merchant_id: {"merchant": merchant, "catalog": products}

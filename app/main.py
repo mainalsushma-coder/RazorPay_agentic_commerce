@@ -14,7 +14,7 @@ from app.models.merchant import Merchant
 from app.models.chat import AgentChatRequest, AgentChatResponse
 from app.agent import run_agent
 from app.models.readiness import MerchantResolutionRequest
-from app.services.audit_service import get_audit_logs, log_policy_decision
+from app.services.audit_service import get_audit_logs, log_audit_event, log_policy_decision
 from app.services.catalog_resolution_service import CatalogResolutionError
 from app.services.order_service import (
     OrderServiceError,
@@ -24,14 +24,18 @@ from app.services.order_service import (
 from app.services.policy_engine import AUTO_APPROVE_LIMIT, MAX_SPEND_LIMIT
 from app.services.readiness_service import scan_catalog_readiness
 from app.services.razorpay_service import create_razorpay_order
+from app.services.payment_executor import build_payment_executor
 from app.repositories.catalog_repository import CatalogRepositoryError, catalog_repository
 from app.services.catalog_import_service import CatalogImportError, catalog_import_service
+from app.services.commerce_catalog_service import get_commerce_merchant, list_commerce_merchants
 
 
 app = FastAPI(
     title="Agent Storefront Autopilot",
     version="0.1.0"
 )
+
+_DEFAULT_SDK_CREATOR = create_razorpay_order
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -58,7 +62,10 @@ def _order_lock(order_id: str) -> Lock:
 
 @app.post("/agent/chat", response_model=AgentChatResponse)
 async def agent_chat(request: AgentChatRequest):
-    if catalog_repository.get_merchant(request.merchant_id) is None:
+    if (
+        request.merchant_id is not None
+        and get_commerce_merchant(request.merchant_id) is None
+    ):
         raise HTTPException(status_code=404, detail="Merchant not found")
     try:
         return await run_agent(
@@ -89,6 +96,16 @@ def login():
     return FileResponse(STATIC_DIR / "login.html")
 
 
+@app.get("/buyer-login", include_in_schema=False)
+def buyer_login():
+    return FileResponse(STATIC_DIR / "buyer-login.html")
+
+
+@app.get("/merchant-login", include_in_schema=False)
+def merchant_login():
+    return FileResponse(STATIC_DIR / "merchant-login.html")
+
+
 @app.get("/profile", include_in_schema=False)
 def buyer_profile():
     return FileResponse(STATIC_DIR / "profile.html")
@@ -105,6 +122,23 @@ def buyer_mandate():
         "above_automatic_limit": "requires_confirmation",
         "above_maximum_transaction": "blocked",
     }
+
+
+@app.get("/orders", include_in_schema=False)
+def buyer_orders_page():
+    return FileResponse(STATIC_DIR / "orders.html")
+
+
+@app.get("/buyer/order-history")
+def buyer_order_history():
+    from app.services.order_history_service import order_history
+    return order_history()
+
+
+@app.get("/buyer/activity")
+def buyer_activity():
+    """Return only real, current-runtime order activity for the buyer UI."""
+    return list(reversed(list(orders.values())))
 
 
 @app.get("/merchant-portal", include_in_schema=False)
@@ -174,7 +208,7 @@ def get_products():
 
 @app.get("/merchants")
 def get_merchants():
-    return catalog_repository.list_merchants()
+    return list_commerce_merchants()
 
 
 @app.post("/merchants", status_code=201)
@@ -330,11 +364,16 @@ def check_inventory(sku: str):
 @app.post("/orders")
 def create_order(order_req: OrderRequest):
     try:
+        payment_override = (
+            create_razorpay_order
+            if create_razorpay_order is not _DEFAULT_SDK_CREATOR
+            else None
+        )
         result = create_guarded_order(
             merchant_id=order_req.merchant_id,
             sku=order_req.sku,
             quantity=order_req.quantity,
-            payment_order_creator=create_razorpay_order,
+            payment_order_creator=payment_override,
         )
     except OrderServiceError as exc:
         raise HTTPException(
@@ -440,10 +479,21 @@ def _confirm_order_guarded(order_id: str):
             detail="Order exceeds maximum spend limit"
         )
 
-    razorpay_order = create_razorpay_order(
+    if create_razorpay_order is not _DEFAULT_SDK_CREATOR:
+        from app.services.payment_executor import RazorpaySDKExecutor
+        executor = RazorpaySDKExecutor(create_razorpay_order)
+    else:
+        executor = build_payment_executor(create_razorpay_order)
+    try:
+        razorpay_order = executor.create_order(
         amount_rupees=total,
+        currency=product.currency,
         receipt=order_id,
-    )
+        )
+    except Exception:
+        log_audit_event("payment_execution_failed", order_id=order_id)
+        raise
+    selected = razorpay_order.get("payment_executor", "razorpay_sdk")
 
     order.update({
         "razorpay_order_id": razorpay_order["id"],
@@ -452,6 +502,7 @@ def _confirm_order_guarded(order_id: str):
         "total": total,
         "currency": product.currency,
         "status": "created",
+        "payment_executor": selected,
     })
 
     log_policy_decision(
@@ -462,6 +513,8 @@ def _confirm_order_guarded(order_id: str):
         reason="Human confirmed order above automatic approval limit",
         order_id=order_id,
         razorpay_order_id=razorpay_order["id"],
+        payment_executor=selected,
+        payment_executor_fallback=razorpay_order.get("payment_executor_fallback", False),
     )
 
     return order

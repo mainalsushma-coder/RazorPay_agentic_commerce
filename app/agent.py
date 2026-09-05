@@ -21,11 +21,18 @@ SYSTEM_INSTRUCTION = """You are a shopping agent for Bound.
 Multiple merchants are available. Every catalog search and order must be
 associated with a merchant. Use list_merchants to discover valid merchant IDs,
 never invent merchant IDs, and never mix products between merchants.
-Use the available commerce tools to search the selected merchant catalog and
-create orders only when explicitly requested by the user.
+For each new universal request, discover connected merchants again. Never carry
+a merchant or product selection from an earlier goal. Only restrict merchants when
+the current user request explicitly names one. Search every relevant agent-ready merchant
+and compare the returned candidates. Use the available commerce tools to search
+merchant catalogs and create orders only when explicitly requested by the user.
 Never invent SKUs, prices, stock, order IDs, or payment results.
 Use catalog_search before purchasing when the SKU is not already known.
 Respect all tool results and policy decisions.
+Products identify their source. Shopify products are discovery and verification
+only: their checkout_capability has execution_enabled=false. Never represent an
+external checkout response as a purchase, and never apply the INR mandate to a
+non-INR product.
 If an order requires human confirmation, clearly tell the user that
 confirmation is required and do not claim the purchase completed.
 Human confirmation is not an available tool, so do not offer to perform or
@@ -44,6 +51,8 @@ def _structured_order_message(order: dict[str, Any] | None, fallback: str) -> st
         return "Purchase approved within your mandate."
     if status == "requires_confirmation":
         return "This purchase requires your confirmation."
+    if status == "external_checkout_required":
+        return "The item was verified on Shopify. External checkout connection required."
     if decision == "blocked":
         return "Bound Guardrails blocked the transaction."
     return fallback
@@ -113,7 +122,10 @@ async def run_agent(
                     "not switch merchants."
                 )
             messages: list[Any] = [{"role": "system", "content": instruction}]
-            messages.extend(conversation_history or [])
+            # Global workspace submissions are independent goals. Merchant-scoped
+            # CLI conversations retain their explicit conversational contract.
+            if merchant_id is not None:
+                messages.extend(conversation_history or [])
             messages.append({"role": "user", "content": user_message})
             events: list[AgentEvent] = []
             products: list[dict[str, Any]] = []
@@ -180,7 +192,17 @@ async def run_agent(
                     ))
                     payload = observed.get("result", observed) if isinstance(observed, dict) else observed
                     if name == "catalog_search" and isinstance(payload, list):
-                        products = [item for item in payload if isinstance(item, dict) and item.get("merchant_id") == merchant_id]
+                        scoped = [
+                            item for item in payload
+                            if isinstance(item, dict)
+                            and isinstance(item.get("merchant_id"), str)
+                            and (merchant_id is None or item.get("merchant_id") == merchant_id)
+                        ]
+                        known = {(item.get("source"), item.get("merchant_id"), item.get("source_product_id"), item.get("source_variant_id")) for item in products}
+                        products.extend(
+                            item for item in scoped
+                            if (item.get("source"), item.get("merchant_id"), item.get("source_product_id"), item.get("source_variant_id")) not in known
+                        )
                     if name == "create_order" and isinstance(payload, dict):
                         order = payload
                         decision = payload.get("policy_decision") or payload.get("decision")

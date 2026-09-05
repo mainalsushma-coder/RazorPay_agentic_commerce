@@ -53,3 +53,9 @@ orders, or Razorpay. A merchant must explicitly activate a 100%-ready catalog.
 CSV fields are `sku,name,category,description,price,currency,stock,attributes`.
 `attributes` is optional and, when supplied, must be a JSON object encoded as a
 CSV string. Demo files are in `demo/`.
+
+### My Orders prototype
+
+The buyer navigation links to `/orders`, with read-only details in an accessible modal and data from `/buyer/order-history`. Shopping workspace shows the latest three orders and a View all orders link. Orders and audit state are shared within the current FastAPI process, are not account-isolated, and disappear on restart; no database was added. Earlier orders may lack creation metadata.
+
+`created` is displayed as **Order created**, with **Awaiting payment**: only a Razorpay order object exists, and payment completion is not tracked. `requires_confirmation` is **Confirmation required**; `blocked` is **Blocked**; unknown states are **Status unavailable**. Blocked audit attempts without an order ID appear separately and never become orders. Confirmation is identified from linked human-confirmed audit events. Shopify discovery does not create BOUND orders. Test Mode is indicated only when creation metadata identifies a Razorpay test key. Details expose an allowlist of fields and safe audit labels, never raw payment payloads.

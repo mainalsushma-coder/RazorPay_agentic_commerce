@@ -22,10 +22,11 @@ def setup_function():
 def test_list_merchants_returns_only_public_metadata():
     merchants = list_merchants()
 
-    assert {merchant["name"] for merchant in merchants} == {"GlowCare", "TechHub"}
+    assert {merchant["name"] for merchant in merchants} == {"GlowCare", "TechHub", "BOUND Commerce Test"}
     assert all(set(merchant) == {
-        "merchant_id", "name", "category", "description", "agent_ready"
+        "merchant_id", "name", "category", "description", "agent_ready", "source"
     } for merchant in merchants)
+    assert all("source_config" not in merchant for merchant in merchants)
 
 
 def test_catalog_search_is_merchant_scoped():

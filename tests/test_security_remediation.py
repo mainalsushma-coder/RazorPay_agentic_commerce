@@ -125,7 +125,7 @@ def test_deterministic_buy_rejects_browser_decisions_and_uses_shared_service(mon
             "merchant_id": "techhub", "sku": "TECH002", "quantity": 1, field: value,
         }).status_code == 422
     script = client.get("/static/app.js").text
-    assert 'json("/buyer/orders"' in script
+    assert 'api("/buyer/orders"' in script
     assert "sku:product.sku" in script
     assert "send(`Buy ${p.name}`" not in script
 

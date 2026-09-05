@@ -10,9 +10,9 @@ client = TestClient(app)
 def test_demo_entry_has_buyer_and_merchant_paths():
     page = client.get("/login")
     assert page.status_code == 200
-    assert 'href="/dashboard"' in page.text
-    assert 'href="/merchant-portal"' in page.text
-    assert "Demo identity entry only" in page.text
+    assert 'href="/buyer-login"' in page.text
+    assert 'href="/merchant-login"' in page.text
+    assert "Bound prototype" in page.text
 
 
 def test_profile_and_authoritative_mandate_metadata():
@@ -35,7 +35,8 @@ def test_profile_and_authoritative_mandate_metadata():
 def test_core_product_surfaces_and_catalog_trust_labels():
     pages = [client.get(path) for path in ("/login", "/dashboard", "/profile", "/merchant-portal")]
     assert all(page.status_code == 200 for page in pages)
-    assert all("BOUND" in page.text and 'class="brand-mark"' in page.text for page in pages)
+    assert all("BOUND" in page.text for page in pages)
+    assert 'class="brand-badge"' not in pages[0].text
     portal = client.get("/static/merchant-portal.js").text
     assert "Active Catalog" in portal
     assert "Staged" in portal
@@ -44,21 +45,42 @@ def test_core_product_surfaces_and_catalog_trust_labels():
 
 def test_model_text_is_rendered_with_text_nodes_and_payment_id_is_conditional():
     script = client.get("/static/app.js").text
-    assert "appendFormattedText" in script
-    assert "document.createTextNode" in script
-    assert "appendFormattedText(p,t.content)" in script
-    assert "innerHTML=`<div class=\"message-bubble\"><p>${" not in script
-    assert "if(o.razorpay_order_id)" in script
-    assert "code.textContent=o.razorpay_order_id" in script
-    assert "o.razorpay_order_id||o.status" not in script
+    assert "textContent=String" in script
+    assert "text($(\"#agent-summary\")" in script
+    assert "result.message" in script
+    assert "innerHTML=result.message" not in script
 
 
-def test_empty_prompts_use_normal_chat_and_checkout_copy_is_structured():
+def test_goal_examples_use_universal_agent_and_checkout_copy_is_structured():
     script = client.get("/static/app.js").text
-    assert "Try asking" in script
-    assert "m.category" in script
-    assert "button.onclick=()=>send(prompt,button)" in script
-    assert 'if(!conversation.turns.length&&!state.busy)' in script
-    assert "BOUND GUARDED CHECKOUT" in script
-    assert "Your AI agent cannot approve this transaction itself." in script
-    assert "Bound Guardrails blocked the transaction." in script
+    assert "[data-goal]" in script
+    assert 'api("/agent/chat"' in script
+    assert "Human approval required" in script
+    assert "No Razorpay order exists until you approve." in script
+    assert "No payment order was created." in script
+
+
+def test_product_success_allows_repeat_purchase_with_busy_protection():
+    script = client.get("/static/app.js").text
+    state_fn = script.split("function productOrderState", 1)[1].split("function productCard", 1)[0]
+    assert 'return"pending"' in state_fn
+    assert 'order.status==="created")return"repeat"' in state_fn
+    assert 'order.status==="requires_confirmation")return"approval"' in state_fn
+    assert '==="blocked")return"blocked"' in state_fn
+    assert 'return"error"' in state_fn
+    assert 'pending:"Checking policy…"' in script
+    assert 'repeat:"Buy again"' in script
+    assert 'approval:"Approval required"' in script
+    assert 'blocked:"Blocked"' in script
+    assert 'error:"Purchase failed"' in script
+    assert 'button.disabled=state.busy||!available||!["idle","repeat"].includes(status)||external' in script
+    assert "if(state.busy)return;state.busy=true" in script
+    assert "automatic_purchase_limit" not in state_fn
+
+
+def test_payment_failure_is_not_labeled_as_a_policy_block():
+    script = client.get("/static/app.js").text
+    order_card = script.split("function orderCard", 1)[1].split("function showOrder", 1)[0]
+    assert 'blocked?order.reason||' in order_card
+    assert 'blocked?"Transaction exceeds mandate":"Payment order could not be created"' in order_card
+    assert "The payment service returned an uncertain result." in order_card

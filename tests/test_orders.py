@@ -88,7 +88,7 @@ def test_audit_contains_all_policy_decisions(monkeypatch):
     assert logs[0]["razorpay_order_id"] == "order_test_approved"
     assert logs[0]["order_id"] is not None
     assert logs[1]["razorpay_order_id"] is None
-    assert logs[1]["order_id"] is None
+    assert logs[1]["order_id"] is not None
     assert logs[2]["razorpay_order_id"] is None
     assert logs[2]["order_id"] is None
 

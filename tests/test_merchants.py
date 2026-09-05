@@ -23,7 +23,7 @@ def test_merchants_are_listed_without_catalogs():
 
     assert response.status_code == 200
     merchants = response.json()
-    assert {merchant["name"] for merchant in merchants} == {"GlowCare", "TechHub"}
+    assert {merchant["name"] for merchant in merchants} == {"GlowCare", "TechHub", "BOUND Commerce Test"}
     assert all("catalog" not in merchant for merchant in merchants)
 
 
