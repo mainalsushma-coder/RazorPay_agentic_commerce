@@ -1,4 +1,4 @@
-"""Local Ollama shopping agent backed exclusively by the storefront MCP server."""
+"""Shopping agent backed exclusively by the storefront MCP server."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from mcp.client.stdio import stdio_client
 from ollama import AsyncClient
 
 from app.models.chat import AgentChatResponse, AgentEvent
+from app.llm_provider import create_chat_client
 
 
 MODEL = "qwen3.5:4b"
@@ -107,9 +108,9 @@ async def run_agent(
     conversation_history: list[Any] | None = None,
     ollama_client: AsyncClient | None = None,
 ) -> AgentChatResponse:
-    """Run one user request through Ollama and the stdio MCP server."""
+    """Run one user request through the selected model and stdio MCP server."""
     server = _server_parameters()
-    client = ollama_client or AsyncClient()
+    client = ollama_client or create_chat_client()
 
     async with stdio_client(server) as (read_stream, write_stream):
         async with ClientSession(read_stream, write_stream) as session:
